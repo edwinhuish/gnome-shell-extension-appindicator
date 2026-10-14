@@ -1272,8 +1272,14 @@ class AppIndicatorsIconActor extends St.Icon {
             imageActor.content = null;
             imageActor.destroy();
 
+            // Custom images are shown at their own size (that's what makes
+            // wide icons such as the one of indicator-multiload work), so we
+            // scale them proportionally to the icon size.
+            const scale = height > 0 ? iconSize / height : 1;
+
             this._setImageContent(content,
-                width * scaleFactor, height * scaleFactor);
+                Math.round(width * scale * scaleFactor),
+                Math.round(iconSize * scaleFactor));
         };
 
         if (customImage.content) {
@@ -1661,6 +1667,14 @@ class AppIndicatorsIconActor extends St.Icon {
 
         this.set_style(iconStyle);
         this.set_icon_size(this._iconSize);
+
+        // Icons that are rendered from a themed icon (which is what custom
+        // icons are) are scaled to the actor size, so we have to keep it in
+        // sync with the icon size, otherwise changing the icon size would
+        // leave them untouched.
+        const {scaleFactor} = St.ThemeContext.get_for_stage(global.stage);
+        this.width = -1;
+        this.height = this._iconSize * scaleFactor;
     }
 
     _updateCustomIcons() {
