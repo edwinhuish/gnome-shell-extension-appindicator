@@ -25,6 +25,7 @@ import * as Panel from 'resource:///org/gnome/shell/ui/panel.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 
 import * as AppIndicator from './appIndicator.js';
+import * as PanelAreas from './panelAreas.js';
 import * as PromiseUtils from './promiseUtils.js';
 import * as SettingsManager from './settingsManager.js';
 import * as Util from './util.js';
@@ -46,22 +47,19 @@ export function addIconToPanel(statusIcon) {
     if (!(statusIcon instanceof BaseStatusIcon))
         throw TypeError(`Unexpected icon type: ${statusIcon}`);
 
-    const settings = SettingsManager.getDefaultGSettings();
-    const indicatorId = `appindicator-${statusIcon.uniqueId}`;
+    const panelAreas = PanelAreas.PanelAreas.getDefault();
 
-    const currentIcon = Main.panel.statusArea[indicatorId];
-    if (currentIcon) {
-        if (currentIcon !== statusIcon)
-            currentIcon.destroy();
-
-        Main.panel.statusArea[indicatorId] = null;
+    if (panelAreas) {
+        // Keep the tray area right next to the language area, and let
+        // PanelAreas take care of re-placing us when the panel layout changes.
+        panelAreas.placeInTrayArea(statusIcon);
+        return;
     }
 
-    Main.panel.addToStatusArea(indicatorId, statusIcon, 1,
+    // Should not happen, PanelAreas is initialized before any icon shows up.
+    const settings = SettingsManager.getDefaultGSettings();
+    Main.panel.addToStatusArea(`appindicator-${statusIcon.uniqueId}`, statusIcon, 1,
         settings.get_string('tray-pos'));
-
-    Util.connectSmart(settings, 'changed::tray-pos', statusIcon, () =>
-        addIconToPanel(statusIcon));
 }
 
 export function getTrayIcons() {
@@ -93,6 +91,9 @@ class IndicatorBaseStatusIcon extends PanelMenu.Button {
         this._showIfReady();
 
         this.set_style(IndicatorBaseStatusIcon.DEFAULT_STYLE);
+
+        this._isDestroyed = false;
+        PanelAreas.PanelAreas.getDefault()?.registerTrayIcon(this);
     }
 
     _setIconActor(icon) {
@@ -117,11 +118,24 @@ class IndicatorBaseStatusIcon extends PanelMenu.Button {
     }
 
     _onDestroy() {
+        this._isDestroyed = true;
+        PanelAreas.PanelAreas.getDefault()?.unregisterTrayIcon(this);
+
         if (this._icon)
             this._icon.destroy();
 
         if (super._onDestroy)
             super._onDestroy();
+    }
+
+    /**
+     * (Re-)places this icon in the tray area, right after the language area.
+     */
+    placeInPanel() {
+        if (this._isDestroyed)
+            return;
+
+        addIconToPanel(this);
     }
 
     isReady() {

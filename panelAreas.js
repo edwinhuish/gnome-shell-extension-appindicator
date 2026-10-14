@@ -65,6 +65,7 @@ export class PanelAreas extends Signals.EventEmitter {
 
         this._adoptedLanguageIndicator = null;
         this._ownLanguageIndicator = null;
+        this._trayIcons = new Set();
 
         Util.connectSmart(settings, 'changed::tray-pos', this, () => this.relayout());
         Util.connectSmart(settings, 'changed::language-area-enabled', this,
@@ -91,20 +92,96 @@ export class PanelAreas extends Signals.EventEmitter {
     }
 
     /**
+     * Index of the first tray icon: the tray area always starts right after the
+     * language area, so that both areas stay adjacent to each other.
+     */
+    getTrayIconIndex() {
+        const indicator = this._placeLanguageArea();
+
+        if (!indicator)
+            return 0;
+
+        const {container} = indicator;
+        const box = this._getBox();
+
+        if (container.get_parent() !== box)
+            return 0;
+
+        return box.get_children().indexOf(container) + 1;
+    }
+
+    /**
+     * Adds an icon to the tray area.
+     *
+     * @param {BaseStatusIcon} icon the tray icon to place.
+     */
+    placeInTrayArea(icon) {
+        const box = this._getBox();
+
+        // Tray icons are always inserted right after the language area, so an
+        // icon that is already in the managed box is already in place.
+        if (icon.container.get_parent() === box)
+            return;
+
+        const role = `appindicator-${icon.uniqueId}`;
+        const currentIcon = Main.panel.statusArea[role];
+
+        if (currentIcon) {
+            if (currentIcon !== icon)
+                currentIcon.destroy();
+
+            Main.panel.statusArea[role] = null;
+        }
+
+        Main.panel.addToStatusArea(role, icon, this.getTrayIconIndex(), this.boxName);
+    }
+
+    /**
+     * Tracks a tray icon, so that the tray area can be kept in a sane state.
+     *
+     * @param {BaseStatusIcon} icon the icon to track.
+     */
+    registerTrayIcon(icon) {
+        this._trayIcons.add(icon);
+    }
+
+    /**
+     * @param {BaseStatusIcon} icon the icon that is gone.
+     */
+    unregisterTrayIcon(icon) {
+        this._trayIcons.delete(icon);
+    }
+
+    /**
      * Re-applies the position of every area we own.
      */
     relayout() {
         if (!Main.panel)
             return;
 
+        this._placeLanguageArea();
+
+        // Icons only move when the box they live in changed, see placeInTrayArea().
+        for (const icon of [...this._trayIcons])
+            icon.placeInPanel();
+    }
+
+    /**
+     * Keeps the language area at the leftmost index of the managed panel box.
+     *
+     * @returns {PanelMenu.Button|null} the language area, if there is one.
+     */
+    _placeLanguageArea() {
         if (!SettingsManager.getDefaultGSettings().get_boolean('language-area-enabled')) {
             this._releaseLanguageArea();
-            return;
+            return null;
         }
 
         const indicator = this._getLanguageIndicator();
         if (indicator)
             this._moveToBox(indicator.container, this._getBox(), 0);
+
+        return indicator;
     }
 
     _getBox(boxName = this.boxName) {
@@ -197,9 +274,9 @@ export class PanelAreas extends Signals.EventEmitter {
 
     destroy() {
         this._releaseLanguageArea();
+        this._trayIcons.clear();
 
         // connectSmart() drops every connection we made once we emit this.
         this.emit('destroy');
-        delete this._settingsIds;
     }
 }
