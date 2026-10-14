@@ -79,6 +79,8 @@ class IndicatorBaseStatusIcon extends PanelMenu.Button {
 
         const settings = SettingsManager.getDefaultGSettings();
         Util.connectSmart(settings, 'changed::icon-opacity', this, this._updateOpacity);
+        Util.connectSmart(settings, 'changed::tray-icon-spacing', this,
+            this._updateIconSpacing);
         this.connect('notify::hover', () => this._onHoverChanged());
 
         if (!super._onDestroy)
@@ -216,6 +218,13 @@ class IndicatorBaseStatusIcon extends PanelMenu.Button {
 
     static get DEFAULT_STYLE() {
         const settings = SettingsManager.getDefaultGSettings();
+        const spacing = settings.get_int('tray-icon-spacing');
+
+        // A spacing explicitly chosen by the user always wins over the
+        // compact mode default.
+        if (spacing > 0)
+            return `-natural-hpadding: ${spacing}px`;
+
         if (!settings.get_boolean('compact-mode-enabled'))
             return null; // drop to default -natural-hpadding.
 
@@ -224,6 +233,10 @@ class IndicatorBaseStatusIcon extends PanelMenu.Button {
 
     _updateCompactMode() {
         this._icon.set_style(AppIndicator.IconActor.DEFAULT_STYLE);
+        this.set_style(IndicatorBaseStatusIcon.DEFAULT_STYLE);
+    }
+
+    _updateIconSpacing() {
         this.set_style(IndicatorBaseStatusIcon.DEFAULT_STYLE);
     }
 

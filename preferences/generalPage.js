@@ -50,6 +50,15 @@ class AppIndicatorGeneralPage extends Adw.PreferencesPage {
 
         this.group.add(compactModeSwitch);
 
+        this._createScaleRow({
+            title: _('Icon Spacing'),
+            subtitle: _('Space between the tray icons, 0 keeps the default spacing'),
+            settingsKey: this._settingsKey.TRAY_ICON_SPACING,
+            from: 0,
+            to: 48,
+            step: 1,
+        });
+
         const languageAreaSwitch = new Adw.SwitchRow({
             title: _('Show Language Area'),
             subtitle: _('Keeps the language (input source) area at the left of the tray icons'),
@@ -128,6 +137,43 @@ class AppIndicatorGeneralPage extends Adw.PreferencesPage {
 
         this.group.add(combo);
         this.add(this.group);
+    }
+
+    _createScaleRow(args) {
+        const title = args.title || 'Default Title';
+        const subtitle = args.subtitle || null;
+        const settingsKey = args.settingsKey || '';
+        const from = args.from || 0;
+        const to = args.to || 100;
+        const step = args.step || 1;
+
+        const scale = new Gtk.Scale({
+            orientation: Gtk.Orientation.HORIZONTAL,
+            adjustment: new Gtk.Adjustment({
+                lower: from,
+                upper: to,
+                step_increment: step,
+                page_increment: step * 5,
+            }),
+            draw_value: true,
+            digits: 0,
+            hexpand: true,
+            width_request: 180,
+            valign: Gtk.Align.CENTER,
+        });
+
+        scale.set_value(this._settings.get_int(settingsKey));
+        scale.connect('value-changed', widget =>
+            this._settings.set_int(settingsKey, Math.round(widget.get_value()))
+        );
+
+        const row = new Adw.ActionRow({title});
+        if (subtitle !== null)
+            row.subtitle = subtitle;
+
+        row.add_suffix(scale);
+
+        this.group.add(row);
     }
 
     _createSpinRow(args) {

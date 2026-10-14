@@ -35,6 +35,12 @@
       <summary>Compact Mode</summary>
       <description>Reduces the Spacing Between Indicators</description>
     </key>
+    <key name="tray-icon-spacing" type="i">
+      <default>0</default>
+      <summary>Tray icon spacing</summary>
+      <description>Space between the tray icons in pixel, 0 keeps the default spacing</description>
+      <range min="0" max="48"/>
+    </key>
     <key name="tray-pos" type="s">
       <default>"right"</default>
       <summary>Position in tray</summary>

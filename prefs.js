@@ -16,6 +16,7 @@ const SettingsKey = {
     LEGACY_TRAY_ENABLED: 'legacy-tray-enabled',
     LANGUAGE_AREA_ENABLED: 'language-area-enabled',
     COMPACT_MODE_ENABLED: 'compact-mode-enabled',
+    TRAY_ICON_SPACING: 'tray-icon-spacing',
     ICON_SIZE: 'icon-size',
     ICON_OPACITY: 'icon-opacity',
     ICON_SATURATION: 'icon-saturation',
