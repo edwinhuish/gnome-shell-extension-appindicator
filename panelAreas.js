@@ -14,7 +14,13 @@
 // along with this program; if not, write to the Free Software
 // Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
+import Clutter from 'gi://Clutter';
+import GLib from 'gi://GLib';
+import GObject from 'gi://GObject';
+import St from 'gi://St';
+
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as Signals from 'resource:///org/gnome/shell/misc/signals.js';
 import {InputSourceIndicator} from 'resource:///org/gnome/shell/ui/status/keyboard.js';
 
@@ -22,6 +28,7 @@ import * as SettingsManager from './settingsManager.js';
 import * as Util from './util.js';
 
 export const LANGUAGE_AREA_ROLE = 'appindicator-language-area';
+export const FOLD_BUTTON_ROLE = 'appindicator-fold-button';
 
 const SHELL_LANGUAGE_AREA_ROLE = 'keyboard';
 const PANEL_BOX_NAMES = ['left', 'center', 'right'];
@@ -29,9 +36,48 @@ const PANEL_BOX_NAMES = ['left', 'center', 'right'];
 let panelAreas;
 
 /**
+ * The button that sits between the language area and the tray area and reveals
+ * the icons the user has hidden.
+ */
+export const TrayFoldButton = GObject.registerClass(
+class AppIndicatorTrayFoldButton extends PanelMenu.Button {
+    static get HIDDEN_ICON() {
+        return 'pan-end-symbolic';
+    }
+
+    static get REVEALED_ICON() {
+        return 'pan-start-symbolic';
+    }
+
+    _init() {
+        // No menu: clicking this button only reveals the hidden tray icons.
+        super._init(0.5, 'Hidden tray icons', true);
+
+        this.add_style_class_name('appindicator-fold-button');
+
+        this._foldIcon = new St.Icon({
+            style_class: 'system-status-icon',
+            icon_name: TrayFoldButton.HIDDEN_ICON,
+        });
+        this.add_child(this._foldIcon);
+
+        this._foldGesture = new Clutter.ClickGesture();
+        this._foldGesture.set_recognize_on_press(true);
+        this._foldGesture.connect('recognize',
+            () => PanelAreas.getDefault()?.toggleHiddenIcons());
+        this.add_action(this._foldGesture);
+    }
+
+    setRevealed(revealed) {
+        this._foldIcon.icon_name = revealed
+            ? TrayFoldButton.REVEALED_ICON : TrayFoldButton.HIDDEN_ICON;
+    }
+});
+
+/**
  * Owns the panel areas that belong to this extension:
  *
- *     [ language area ][ tray area ]
+ *     [ language area ][ fold button ][ tray area ]
  *
  * The language area holds the language (input source) indicator and is always
  * kept as the leftmost item of the panel box we manage, so that it can never be
@@ -65,14 +111,20 @@ export class PanelAreas extends Signals.EventEmitter {
 
         this._adoptedLanguageIndicator = null;
         this._ownLanguageIndicator = null;
+        this._foldButton = null;
         this._trayIcons = new Set();
+        this._hiddenIcons = new Set();
+        this._hiddenIconsRevealed = false;
 
         Util.connectSmart(settings, 'changed::tray-pos', this, () => this.relayout());
         Util.connectSmart(settings, 'changed::language-area-enabled', this,
             () => this.relayout());
+        Util.connectSmart(settings, 'changed::hidden-icons', this,
+            () => this._updateHiddenIcons());
 
         Util.connectSmart(Main.sessionMode, 'updated', this, () => this.relayout());
 
+        this._updateHiddenIcons();
         this.relayout();
     }
 
@@ -80,7 +132,7 @@ export class PanelAreas extends Signals.EventEmitter {
      * The panel box (`left`, `center` or `right`) the extension areas live in.
      */
     get boxName() {
-        const boxName = SettingsManager.getDefaultGSettings().get_string('tray-pos');
+        const boxName = this._getSettings().get_string('tray-pos');
         return PANEL_BOX_NAMES.includes(boxName) ? boxName : 'right';
     }
 
@@ -92,22 +144,24 @@ export class PanelAreas extends Signals.EventEmitter {
     }
 
     /**
+     * Whether the hidden icons are currently shown to the user.
+     */
+    get hiddenIconsRevealed() {
+        return this._hiddenIconsRevealed;
+    }
+
+    /**
      * Index of the first tray icon: the tray area always starts right after the
-     * language area, so that both areas stay adjacent to each other.
+     * fold button, which itself sits right after the language area.
      */
     getTrayIconIndex() {
-        const indicator = this._placeLanguageArea();
-
-        if (!indicator)
-            return 0;
-
-        const {container} = indicator;
+        const foldButton = this._placeFoldButton();
         const box = this._getBox();
 
-        if (container.get_parent() !== box)
+        if (foldButton.container.get_parent() !== box)
             return 0;
 
-        return box.get_children().indexOf(container) + 1;
+        return box.get_children().indexOf(foldButton.container) + 1;
     }
 
     /**
@@ -116,9 +170,11 @@ export class PanelAreas extends Signals.EventEmitter {
      * @param {BaseStatusIcon} icon the tray icon to place.
      */
     placeInTrayArea(icon) {
+        this.registerTrayIcon(icon);
+
         const box = this._getBox();
 
-        // Tray icons are always inserted right after the language area, so an
+        // Tray icons are always inserted right after the fold button, so an
         // icon that is already in the managed box is already in place.
         if (icon.container.get_parent() === box)
             return;
@@ -142,14 +198,41 @@ export class PanelAreas extends Signals.EventEmitter {
      * @param {BaseStatusIcon} icon the icon to track.
      */
     registerTrayIcon(icon) {
+        if (this._trayIcons.has(icon))
+            return;
+
         this._trayIcons.add(icon);
+        this._publishKnownIcons();
     }
 
     /**
      * @param {BaseStatusIcon} icon the icon that is gone.
      */
     unregisterTrayIcon(icon) {
-        this._trayIcons.delete(icon);
+        if (this._trayIcons.delete(icon))
+            this._publishKnownIcons();
+    }
+
+    /**
+     * @param {string} uniqueId the id of an indicator.
+     * @returns {boolean} whether that indicator has to stay out of the tray area
+     *   right now.
+     */
+    isIconHidden(uniqueId) {
+        return this._hiddenIcons.has(uniqueId) && !this._hiddenIconsRevealed;
+    }
+
+    /**
+     * Shows or hides the icons the user has hidden.
+     */
+    toggleHiddenIcons() {
+        if (!this._hiddenIcons.size)
+            return;
+
+        this._hiddenIconsRevealed = !this._hiddenIconsRevealed;
+
+        this._foldButton?.setRevealed(this._hiddenIconsRevealed);
+        this._updateIconsVisibility();
     }
 
     /**
@@ -160,6 +243,7 @@ export class PanelAreas extends Signals.EventEmitter {
             return;
 
         this._placeLanguageArea();
+        this._placeFoldButton();
 
         // Icons only move when the box they live in changed, see placeInTrayArea().
         for (const icon of [...this._trayIcons])
@@ -172,7 +256,7 @@ export class PanelAreas extends Signals.EventEmitter {
      * @returns {PanelMenu.Button|null} the language area, if there is one.
      */
     _placeLanguageArea() {
-        if (!SettingsManager.getDefaultGSettings().get_boolean('language-area-enabled')) {
+        if (!this._getSettings().get_boolean('language-area-enabled')) {
             this._releaseLanguageArea();
             return null;
         }
@@ -182,6 +266,82 @@ export class PanelAreas extends Signals.EventEmitter {
             this._moveToBox(indicator.container, this._getBox(), 0);
 
         return indicator;
+    }
+
+    /**
+     * Returns the fold button, creating it when needed.
+     */
+    _getFoldButton() {
+        if (!this._foldButton) {
+            this._foldButton = new TrayFoldButton();
+            Main.panel.addToStatusArea(FOLD_BUTTON_ROLE, this._foldButton, 0,
+                this.boxName);
+        }
+
+        return this._foldButton;
+    }
+
+    /**
+     * Keeps the fold button right after the language area, i.e. at the left of
+     * the tray area.
+     *
+     * @returns {PanelMenu.Button} the fold button.
+     */
+    _placeFoldButton() {
+        const foldButton = this._getFoldButton();
+        const box = this._getBox();
+        const languageArea = this._placeLanguageArea();
+
+        let index = 0;
+        if (languageArea && languageArea.container.get_parent() === box)
+            index = box.get_children().indexOf(languageArea.container) + 1;
+
+        // The button stays in the panel even without hidden icons, so that the
+        // tray area never moves; it's just invisible then.
+        foldButton.visible = this._hiddenIcons.size > 0;
+        foldButton.setRevealed(this._hiddenIconsRevealed);
+
+        this._moveToBox(foldButton.container, box, index);
+
+        return foldButton;
+    }
+
+    _updateHiddenIcons() {
+        this._hiddenIcons = new Set(this._getSettings().get_strv('hidden-icons'));
+
+        // Nothing left to reveal, so collapse back.
+        if (!this._hiddenIcons.size)
+            this._hiddenIconsRevealed = false;
+
+        if (this._foldButton) {
+            this._foldButton.visible = this._hiddenIcons.size > 0;
+            this._foldButton.setRevealed(this._hiddenIconsRevealed);
+        }
+
+        this._updateIconsVisibility();
+    }
+
+    _updateIconsVisibility() {
+        for (const icon of [...this._trayIcons])
+            icon.updateHiddenState();
+    }
+
+    /**
+     * Publishes the icons we know about, so that the preferences can offer them
+     * by name instead of asking for their id.
+     */
+    _publishKnownIcons() {
+        const settings = this._getSettings();
+        const knownIcons = [...this._trayIcons].map(icon =>
+            [icon.uniqueId, icon.displayName || icon.uniqueId]);
+
+        const value = new GLib.Variant('a(ss)', knownIcons);
+        if (!settings.get_value('known-icons').equal(value))
+            settings.set_value('known-icons', value);
+    }
+
+    _getSettings() {
+        return SettingsManager.getDefaultGSettings();
     }
 
     _getBox(boxName = this.boxName) {
@@ -275,6 +435,12 @@ export class PanelAreas extends Signals.EventEmitter {
     destroy() {
         this._releaseLanguageArea();
         this._trayIcons.clear();
+
+        if (this._foldButton) {
+            Main.panel.statusArea[FOLD_BUTTON_ROLE] = null;
+            this._foldButton.destroy();
+            this._foldButton = null;
+        }
 
         // connectSmart() drops every connection we made once we emit this.
         this.emit('destroy');

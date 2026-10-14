@@ -95,7 +95,6 @@ class IndicatorBaseStatusIcon extends PanelMenu.Button {
         this.set_style(IndicatorBaseStatusIcon.DEFAULT_STYLE);
 
         this._isDestroyed = false;
-        PanelAreas.PanelAreas.getDefault()?.registerTrayIcon(this);
     }
 
     _setIconActor(icon) {
@@ -152,8 +151,33 @@ class IndicatorBaseStatusIcon extends PanelMenu.Button {
         throw new GObject.NotImplementedError('uniqueId in %s'.format(this.constructor.name));
     }
 
+    /**
+     * Name to show for this icon in the preferences.
+     */
+    get displayName() {
+        return '';
+    }
+
+    /**
+     * Whether the user asked to keep this icon out of the tray area.
+     */
+    get hiddenByUser() {
+        return PanelAreas.PanelAreas.getDefault()?.isIconHidden(this.uniqueId) ?? false;
+    }
+
     _showIfReady() {
-        this.visible = this.isReady();
+        this._updateVisibility();
+    }
+
+    _updateVisibility() {
+        this.visible = this.isReady() && !this.hiddenByUser;
+    }
+
+    /**
+     * Re-applies the visibility, e.g. because the hidden icons changed.
+     */
+    updateHiddenState() {
+        this._updateVisibility();
     }
 
     _onHoverChanged() {
@@ -298,9 +322,9 @@ class IndicatorStatusIcon extends BaseStatusIcon {
         Util.connectSmart(this._indicator, 'ready', this, this._showIfReady);
         Util.connectSmart(this._indicator, 'menu', this, this._updateMenu);
         Util.connectSmart(this._indicator, 'label', this, this._updateLabel);
-        Util.connectSmart(this._indicator, 'status', this, this._updateStatus);
+        Util.connectSmart(this._indicator, 'status', this, this._updateVisibility);
         Util.connectSmart(this._indicator, 'reset', this, () => {
-            this._updateStatus();
+            this._updateVisibility();
             this._updateLabel();
         });
         Util.connectSmart(this._indicator, 'accessible-name', this, () => {
@@ -325,6 +349,13 @@ class IndicatorStatusIcon extends BaseStatusIcon {
 
     get uniqueId() {
         return this._indicator.uniqueId;
+    }
+
+    get displayName() {
+        if (!this._indicator)
+            return '';
+
+        return this._indicator.accessibleName ?? this._indicator.title ?? '';
     }
 
     isReady() {
@@ -354,9 +385,10 @@ class IndicatorStatusIcon extends BaseStatusIcon {
         }
     }
 
-    _updateStatus() {
+    _updateVisibility() {
         const wasVisible = this.visible;
-        this.visible = this._indicator.status !== AppIndicator.SNIStatus.PASSIVE;
+        this.visible = this._indicator.status !== AppIndicator.SNIStatus.PASSIVE &&
+            !this.hiddenByUser;
 
         if (this.visible !== wasVisible)
             this._indicator.checkAlive().catch(logError);
@@ -391,7 +423,7 @@ class IndicatorStatusIcon extends BaseStatusIcon {
             return;
 
         this._updateLabel();
-        this._updateStatus();
+        this._updateVisibility();
         this._updateMenu();
     }
 
@@ -558,6 +590,10 @@ class IndicatorTrayIcon extends BaseStatusIcon {
 
     get uniqueId() {
         return `legacy:${this._icon.wm_class}:${this._icon.pid}`;
+    }
+
+    get displayName() {
+        return this._icon?.title || this._icon?.wm_class || '';
     }
 
     vfunc_navigate_focus(from, direction) {
