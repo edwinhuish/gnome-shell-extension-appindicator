@@ -18,6 +18,7 @@ import * as Extension from 'resource:///org/gnome/shell/extensions/extension.js'
 
 import * as StatusNotifierWatcher from './statusNotifierWatcher.js';
 import * as Interfaces from './interfaces.js';
+import * as PanelAreas from './panelAreas.js';
 import * as TrayIconsManager from './trayIconsManager.js';
 import * as Util from './util.js';
 import {Logger} from './logger.js';
@@ -57,6 +58,7 @@ export default class AppIndicatorExtension extends Extension.Extension {
         this._isEnabled = true;
         SettingsManager.initialize(this);
         Util.tryCleanupOldIndicators();
+        PanelAreas.PanelAreas.initialize();
         this._maybeEnableAfterNameAvailable();
         TrayIconsManager.TrayIconsManager.initialize();
     }
@@ -64,6 +66,7 @@ export default class AppIndicatorExtension extends Extension.Extension {
     disable() {
         this._isEnabled = false;
         TrayIconsManager.TrayIconsManager.destroy();
+        PanelAreas.PanelAreas.destroy();
 
         if (this._statusNotifierWatcher !== null) {
             this._statusNotifierWatcher.destroy();

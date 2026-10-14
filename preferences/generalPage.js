@@ -50,6 +50,21 @@ class AppIndicatorGeneralPage extends Adw.PreferencesPage {
 
         this.group.add(compactModeSwitch);
 
+        const languageAreaSwitch = new Adw.SwitchRow({
+            title: _('Show Language Area'),
+            subtitle: _('Keeps the language (input source) area at the left of the tray icons'),
+            active: this._settings.get_boolean(this._settingsKey.LANGUAGE_AREA_ENABLED),
+        });
+
+        languageAreaSwitch.connect('notify::active', widget =>
+            this._settings.set_boolean(
+                this._settingsKey.LANGUAGE_AREA_ENABLED,
+                widget.get_active()
+            )
+        );
+
+        this.group.add(languageAreaSwitch);
+
         this._createSpinRow({
             title: _('Opacity'),
             settingsKey: this._settingsKey.ICON_OPACITY,

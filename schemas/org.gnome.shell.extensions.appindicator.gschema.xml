@@ -4,6 +4,11 @@
       <default>true</default>
       <summary>Enable legacy tray icons support</summary>
     </key>
+    <key name="language-area-enabled" type="b">
+      <default>true</default>
+      <summary>Show Language Area</summary>
+      <description>Keep the language (input source) indicator in its own area, always at the left of the tray icons</description>
+    </key>
     <key name="icon-saturation" type="d">
       <default>0.0</default>
       <summary>Saturation</summary>
