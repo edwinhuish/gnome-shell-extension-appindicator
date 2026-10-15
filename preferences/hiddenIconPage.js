@@ -22,8 +22,9 @@ class AppIndicatorHiddenIconPage extends Adw.PreferencesPage {
 
         this._group = new Adw.PreferencesGroup({
             title: _('Tray Icons'),
-            description: _('Icons that are kept out of the tray area. ' +
-                'Use the fold button in the panel to show them.'),
+            description: _('Icons that are collected in the floating panel below ' +
+                'the panel, instead of the tray area. Use the fold button in the ' +
+                'panel to show and hide them.'),
         });
 
         this._entryGroup = new Adw.PreferencesGroup({

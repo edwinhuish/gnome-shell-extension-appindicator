@@ -161,26 +161,17 @@ class IndicatorBaseStatusIcon extends PanelMenu.Button {
         return '';
     }
 
-    /**
-     * Whether the user asked to keep this icon out of the tray area.
-     */
-    get hiddenByUser() {
-        return PanelAreas.PanelAreas.getDefault()?.isIconHidden(this.uniqueId) ?? false;
-    }
-
     _showIfReady() {
         this._updateVisibility();
     }
 
-    _updateVisibility() {
-        this.visible = this.isReady() && !this.hiddenByUser;
-    }
-
     /**
-     * Re-applies the visibility, e.g. because the hidden icons changed.
+     * Whether the icon itself has something to show. Whether it is displayed in
+     * the tray area or in the floating panel with the hidden icons is decided
+     * by the PanelAreas, which move the icon around and show or hide the panel.
      */
-    updateHiddenState() {
-        this._updateVisibility();
+    _updateVisibility() {
+        this.visible = this.isReady();
     }
 
     _onHoverChanged() {
@@ -395,8 +386,8 @@ class IndicatorStatusIcon extends BaseStatusIcon {
 
     _updateVisibility() {
         const wasVisible = this.visible;
-        this.visible = this._indicator.status !== AppIndicator.SNIStatus.PASSIVE &&
-            !this.hiddenByUser;
+        this.visible = this.isReady() &&
+            this._indicator.status !== AppIndicator.SNIStatus.PASSIVE;
 
         if (this.visible !== wasVisible)
             this._indicator.checkAlive().catch(logError);
