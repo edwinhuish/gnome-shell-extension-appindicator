@@ -33,8 +33,19 @@ export const FOLD_BUTTON_ROLE = 'appindicator-fold-button';
 const SHELL_LANGUAGE_AREA_ROLE = 'keyboard';
 const PANEL_BOX_NAMES = ['left', 'center', 'right'];
 
+/** Pixels the pointer has to move before a press turns into a drag. */
+const DRAG_THRESHOLD = 8;
+
 /** Gap between the panel bar and the floating panel below it. */
 const PANEL_GAP = 6;
+
+/**
+ * Extra room around the floating panel. Once an icon is inside the panel the
+ * pointer may leave it by that much without the icon jumping back into the
+ * tray area, which would otherwise start a back and forth when the panel is
+ * resized by the icon that is being moved.
+ */
+const PANEL_SLACK = 16;
 
 let panelAreas;
 
@@ -90,7 +101,9 @@ class AppIndicatorTrayFoldButton extends PanelMenu.Button {
  * language area (see addIconToPanel() in indicatorStatusIcon.js).
  *
  * Icons the user does not want in the panel bar are kept in a floating panel
- * below it, which the fold button shows and hides.
+ * below it, which the fold button shows and hides. Both areas can be
+ * rearranged by dragging the icons around, and an icon can be dragged from one
+ * area into the other one.
  */
 export class PanelAreas extends Signals.EventEmitter {
     static initialize() {
@@ -121,19 +134,29 @@ export class PanelAreas extends Signals.EventEmitter {
 
         // Every icon we know about, in the order it showed up in.
         this._trayIcons = new Set();
+        this._dragHandlers = new Map();
 
-        // The ids of the icons living in the floating panel.
+        // The ids of the icons living in the floating panel, and the order the
+        // user dragged the icons into.
         this._hiddenIcons = new Set(settings.get_strv('hidden-icons'));
+        this._iconOrder = settings.get_strv('icon-order');
         this._hiddenIconsRevealed = false;
 
         this._hiddenPanel = null;
         this._hiddenPanelBox = null;
+
+        this._press = null;
+        this._drag = null;
+        this._panelFrozen = false;
+        this._capturedEventId = 0;
 
         Util.connectSmart(settings, 'changed::tray-pos', this, () => this.relayout());
         Util.connectSmart(settings, 'changed::language-area-enabled', this,
             () => this.relayout());
         Util.connectSmart(settings, 'changed::hidden-icons', this,
             () => this._updateHiddenIcons());
+        Util.connectSmart(settings, 'changed::icon-order', this,
+            () => this._updateIconOrder());
         Util.connectSmart(settings, 'changed::icon-size', this, () => this.relayout());
         Util.connectSmart(settings, 'changed::tray-icon-spacing', this,
             () => this._queuePanelReposition());
@@ -226,6 +249,7 @@ export class PanelAreas extends Signals.EventEmitter {
             return;
 
         this._trayIcons.add(icon);
+        this._setupDrag(icon);
         this._publishKnownIcons();
     }
 
@@ -233,9 +257,17 @@ export class PanelAreas extends Signals.EventEmitter {
      * @param {BaseStatusIcon} icon the icon that is gone.
      */
     unregisterTrayIcon(icon) {
-        if (!this._trayIcons.delete(icon))
+        // The icon is forgotten first: it is on its way out, so it must not
+        // take part in the relayout the cancelled drag does.
+        const known = this._trayIcons.delete(icon);
+
+        if (this._drag?.icon === icon)
+            this._cancelDrag();
+
+        if (!known)
             return;
 
+        this._teardownDrag(icon);
         this._publishKnownIcons();
     }
 
@@ -363,13 +395,21 @@ export class PanelAreas extends Signals.EventEmitter {
 
     /**
      * The icons we know about that have to be in the tray area or in the
-     * floating panel, in the order they showed up in.
+     * floating panel, in the order the user arranged them in.
      *
      * @param {Function} filter picks the icons of one of the two areas.
      * @returns {BaseStatusIcon[]} the icons, in display order.
      */
     _sortedIcons(filter) {
-        return [...this._trayIcons].filter(filter);
+        const allIcons = [...this._trayIcons];
+        const positions = new Map(allIcons.map((icon, index) => [icon, index]));
+        const order = new Map(this._iconOrder.map((id, index) => [id, index]));
+
+        const orderIndex = icon => order.get(icon.uniqueId) ?? Number.MAX_SAFE_INTEGER;
+
+        // Icons the user never dragged keep the order they showed up in.
+        return allIcons.filter(filter).sort((a, b) =>
+            orderIndex(a) - orderIndex(b) || positions.get(a) - positions.get(b));
     }
 
     /**
@@ -383,6 +423,10 @@ export class PanelAreas extends Signals.EventEmitter {
         let index = startIndex;
 
         for (const icon of icons) {
+            // The icon that is being dragged is placed by the drag itself.
+            if (icon === this._drag?.icon)
+                continue;
+
             const actor = icon.container;
             const current = box.get_children().indexOf(actor);
 
@@ -398,6 +442,11 @@ export class PanelAreas extends Signals.EventEmitter {
         }
     }
 
+    _updateIconOrder() {
+        this._iconOrder = this._getSettings().get_strv('icon-order');
+        this._syncIcons();
+    }
+
     _updateHiddenIcons() {
         this._hiddenIcons = new Set(this._getSettings().get_strv('hidden-icons'));
 
@@ -406,6 +455,57 @@ export class PanelAreas extends Signals.EventEmitter {
             this._hiddenIconsRevealed = false;
 
         this.relayout();
+    }
+
+    /**
+     * Writes the order the icons are currently displayed in.
+     */
+    _persistOrder() {
+        const order = [];
+
+        for (const box of [this._getBox(), this._hiddenPanelBox]) {
+            if (!box)
+                continue;
+
+            for (const child of box.get_children()) {
+                const icon = this._iconForContainer(child);
+                if (icon)
+                    order.push(icon.uniqueId);
+            }
+        }
+
+        const known = new Set(order);
+        for (const id of this._iconOrder) {
+            if (!known.has(id)) {
+                known.add(id);
+                order.push(id);
+            }
+        }
+
+        if (order.join('\n') === this._iconOrder.join('\n'))
+            return;
+
+        this._iconOrder = order;
+        this._getSettings().set_strv('icon-order', order);
+    }
+
+    /**
+     * @param {string} uniqueId the id of an indicator.
+     * @param {boolean} hidden whether it belongs into the floating panel.
+     */
+    _setIconHidden(uniqueId, hidden) {
+        const settings = this._getSettings();
+        const hiddenIcons = new Set(settings.get_strv('hidden-icons'));
+        const changed = hidden
+            ? !hiddenIcons.has(uniqueId) : hiddenIcons.delete(uniqueId);
+
+        if (!changed)
+            return;
+
+        if (hidden)
+            hiddenIcons.add(uniqueId);
+
+        settings.set_strv('hidden-icons', [...hiddenIcons]);
     }
 
     /**
@@ -545,6 +645,8 @@ export class PanelAreas extends Signals.EventEmitter {
         if (!this._hiddenPanel) {
             this._hiddenPanelBox = new St.BoxLayout({
                 style_class: 'appindicator-hidden-panel',
+                // Keeps the panel usable as a drop target while it is empty.
+                style: 'min-width: 44px',
             });
 
             // The shell theme styles this class like a floating menu, so the
@@ -567,7 +669,8 @@ export class PanelAreas extends Signals.EventEmitter {
      */
     _updateHiddenPanel() {
         const hasHiddenIcons = this._hiddenIcons.size > 0;
-        const shouldShow = hasHiddenIcons && this._hiddenIconsRevealed;
+        const shouldShow = (hasHiddenIcons && this._hiddenIconsRevealed) ||
+            !!this._drag;
 
         if (!shouldShow) {
             this._hiddenPanel?.hide();
@@ -585,7 +688,7 @@ export class PanelAreas extends Signals.EventEmitter {
     _updateHiddenPanelPosition() {
         const panel = this._hiddenPanel;
 
-        if (!panel?.visible)
+        if (this._panelFrozen || !panel?.visible)
             return;
 
         const anchor = this._getHiddenPanelAnchor();
@@ -648,6 +751,332 @@ export class PanelAreas extends Signals.EventEmitter {
     }
 
     /*
+     * Dragging the icons around.
+     */
+
+    /**
+     * Makes an icon draggable: pressing it and moving the pointer moves it
+     * inside the tray area, into the floating panel, or from there back into
+     * the tray area.
+     *
+     * @param {BaseStatusIcon} icon the icon to make draggable.
+     */
+    _setupDrag(icon) {
+        if (this._dragHandlers.has(icon))
+            return;
+
+        const ids = [
+            icon.connect('button-press-event',
+                (_actor, event) => this._onButtonPress(icon, event)),
+            icon.connect('button-release-event',
+                (_actor, event) => this._onButtonRelease(icon, event)),
+            icon.connect('motion-event',
+                (_actor, event) => this._onMotion(icon, event)),
+            icon.connect('destroy', () => this._teardownDrag(icon)),
+        ];
+
+        this._dragHandlers.set(icon, ids);
+    }
+
+    _teardownDrag(icon) {
+        const ids = this._dragHandlers.get(icon);
+
+        if (!ids)
+            return;
+
+        this._dragHandlers.delete(icon);
+
+        for (const id of ids) {
+            try {
+                icon.disconnect(id);
+            } catch {
+                // The icon is gone, its connections went with it.
+            }
+        }
+    }
+
+    _onButtonPress(icon, event) {
+        if (event.get_button() !== Clutter.BUTTON_PRIMARY) {
+            this._press = null;
+            return Clutter.EVENT_PROPAGATE;
+        }
+
+        const [x, y] = event.get_coords();
+        this._press = {icon, x, y};
+
+        // The press may still turn into a normal click, so it is not consumed
+        // here; the drag only starts once the pointer moved far enough.
+        return Clutter.EVENT_PROPAGATE;
+    }
+
+    _onButtonRelease(icon, _event) {
+        if (this._press?.icon === icon)
+            this._press = null;
+
+        return Clutter.EVENT_PROPAGATE;
+    }
+
+    _onMotion(icon, event) {
+        const press = this._press;
+
+        if (!press || press.icon !== icon || this._drag)
+            return Clutter.EVENT_PROPAGATE;
+
+        const [x, y] = event.get_coords();
+
+        if (Math.abs(x - press.x) < DRAG_THRESHOLD &&
+            Math.abs(y - press.y) < DRAG_THRESHOLD)
+            return Clutter.EVENT_PROPAGATE;
+
+        this._startDrag(press, x, y);
+
+        return Clutter.EVENT_STOP;
+    }
+
+    /**
+     * @param {object} press where the pointer was pressed down.
+     * @param {number} x the current pointer position.
+     * @param {number} y the current pointer position.
+     */
+    _startDrag(press, x, y) {
+        const {icon} = press;
+        const {container} = icon;
+
+        this._press = null;
+
+        // The press already reached the icon and may have made it schedule a
+        // menu toggle: a drag must not open the menu on top of it.
+        icon.cancelPendingClicks();
+        icon.menu?.close();
+        icon.remove_style_pseudo_class('active');
+
+        const [containerX, containerY] = container.get_transformed_position();
+
+        const clone = new Clutter.Clone({source: container});
+        clone.opacity = 200;
+        clone.set_position(Math.round(x - (press.x - containerX)),
+            Math.round(y - (press.y - containerY)));
+        Util.addActor(Main.uiGroup, clone);
+
+        // The icon itself stays where it is, dimmed, the clone follows the
+        // pointer and the icon moves when the pointer reaches its new place.
+        container.opacity = 100;
+
+        this._drag = {
+            icon,
+            clone,
+            offsetX: press.x - containerX,
+            offsetY: press.y - containerY,
+        };
+
+        // The panel has to be there to be a drop target, empty or not.
+        this._updateHiddenPanel();
+
+        // It is put in place once and then stays where it is: moving it along
+        // with its contents would move the drop target out from under the
+        // pointer as soon as an icon lands in it.
+        this._panelFrozen = true;
+
+        this._capturedEventId = global.stage.connect('captured-event',
+            (_stage, event) => this._onCapturedEvent(event));
+    }
+
+    _onCapturedEvent(event) {
+        switch (event.type()) {
+        case Clutter.EventType.MOTION: {
+            const [x, y] = event.get_coords();
+            this._moveDrag(x, y);
+            return Clutter.EVENT_STOP;
+        }
+        case Clutter.EventType.BUTTON_RELEASE:
+            this._finishDrag();
+            return Clutter.EVENT_STOP;
+        case Clutter.EventType.KEY_PRESS:
+            if (event.get_key_symbol() === Clutter.KEY_Escape) {
+                this._cancelDrag();
+                return Clutter.EVENT_STOP;
+            }
+
+            return Clutter.EVENT_PROPAGATE;
+        default:
+            return Clutter.EVENT_PROPAGATE;
+        }
+    }
+
+    _moveDrag(x, y) {
+        const drag = this._drag;
+
+        if (!drag)
+            return;
+
+        drag.clone.set_position(Math.round(x - drag.offsetX),
+            Math.round(y - drag.offsetY));
+
+        this._updateDropTarget(x, y);
+    }
+
+    /**
+     * Moves the dragged icon to where the pointer is, as a live preview of
+     * where it will end up.
+     *
+     * @param {number} x the pointer position.
+     * @param {number} y the pointer position.
+     */
+    _updateDropTarget(x, y) {
+        const icon = this._drag?.icon;
+
+        if (!icon)
+            return;
+
+        if (this._isOverHiddenPanel(x, y)) {
+            const anchor = this._findDropAnchor(this._hiddenPanelBox, x,
+                icon.container);
+            this._moveActorAfter(icon.container, this._hiddenPanelBox, anchor);
+            return;
+        }
+
+        if (!this._isPointInside(Main.panel, x, y))
+            return;
+
+        const box = this._getBox();
+        const start = this._getFoldButtonContainer(box);
+
+        if (!start)
+            return;
+
+        const anchor = this._findDropAnchor(box, x, icon.container, start);
+        this._moveActorAfter(icon.container, box, anchor);
+    }
+
+    /**
+     * @param {number} x the pointer position.
+     * @param {number} y the pointer position.
+     * @returns {boolean} whether the pointer is over the floating panel.
+     */
+    _isOverHiddenPanel(x, y) {
+        if (!this._hiddenPanel?.visible)
+            return false;
+
+        const slack = this._isIconInHiddenPanel(this._drag?.icon) ? PANEL_SLACK : 0;
+
+        return this._isPointInside(this._hiddenPanel, x, y, slack);
+    }
+
+    _isIconInHiddenPanel(icon) {
+        return !!icon && icon.container.get_parent() === this._hiddenPanelBox;
+    }
+
+    /**
+     * The icon the dragged one has to be placed after so that it lands under
+     * the pointer. Only the icons of `box` are taken into account, whatever
+     * else the box holds (the language area, the fold button, other panel
+     * items, ...) keeps its place.
+     *
+     * @param {St.BoxLayout} box the box the pointer is in.
+     * @param {number} x the pointer position.
+     * @param {Clutter.Actor} dragged the container that is being moved.
+     * @param {Clutter.Actor|null} start the container the icon may never be
+     *   placed in front of.
+     * @returns {Clutter.Actor|null} what to place the icon after.
+     */
+    _findDropAnchor(box, x, dragged, start = null) {
+        let anchor = start;
+
+        for (const child of box.get_children()) {
+            if (child === dragged || !this._iconForContainer(child))
+                continue;
+
+            const {x: childX, width} = this._getGeometry(child);
+
+            if (x < childX + width / 2)
+                break;
+
+            anchor = child;
+        }
+
+        return anchor;
+    }
+
+    /**
+     * Moves an actor into `box`, right after `anchor` (or to the front of the
+     * box when `anchor` is null).
+     *
+     * @param {Clutter.Actor} actor the actor to move.
+     * @param {St.BoxLayout} box the box it belongs in.
+     * @param {Clutter.Actor|null} anchor what it has to follow.
+     */
+    _moveActorAfter(actor, box, anchor) {
+        const children = box.get_children();
+        const anchorIndex = anchor ? children.indexOf(anchor) : -1;
+
+        if (actor.get_parent() === box && children.indexOf(actor) === anchorIndex + 1)
+            return;
+
+        if (actor.get_parent())
+            actor.get_parent().remove_child(actor);
+
+        const index = anchorIndex < 0 ? 0
+            : box.get_children().indexOf(anchor) + 1;
+
+        box.insert_child_at_index(actor, Math.min(index, box.get_n_children()));
+    }
+
+    _finishDrag() {
+        const drag = this._drag;
+
+        if (!drag)
+            return;
+
+        const {icon} = drag;
+        const inPanel = this._isIconInHiddenPanel(icon);
+
+        this._stopDrag();
+
+        // The areas followed the pointer while dragging, the settings are only
+        // written now, so that a cancelled drag simply restores the old state.
+        // The order goes first: writing the hidden state moves the icons around
+        // and the place the icon was dropped at would be lost otherwise.
+        this._persistOrder();
+        this._setIconHidden(icon.uniqueId, inPanel);
+        this.relayout();
+    }
+
+    _cancelDrag() {
+        if (!this._drag)
+            return;
+
+        this._stopDrag();
+        this.relayout();
+    }
+
+    /**
+     * Gets rid of everything the drag put on the screen and forgets about it.
+     */
+    _stopDrag() {
+        const drag = this._drag;
+
+        if (!drag)
+            return;
+
+        this._drag = null;
+        this._panelFrozen = false;
+
+        if (this._capturedEventId) {
+            global.stage.disconnect(this._capturedEventId);
+            this._capturedEventId = 0;
+        }
+
+        // The icon may have been destroyed while it was being dragged.
+        if (this._trayIcons.has(drag.icon))
+            drag.icon.container.opacity = 255;
+
+        drag.clone.destroy();
+
+        // The panel was only shown to be a drop target.
+        this._updateHiddenPanel();
+    }
+
+    /*
      * Small Clutter helpers.
      */
 
@@ -658,11 +1087,37 @@ export class PanelAreas extends Signals.EventEmitter {
         return {x, y, width, height};
     }
 
+    _isPointInside(actor, x, y, slack = 0) {
+        if (!actor?.visible)
+            return false;
+
+        const {x: actorX, y: actorY, width, height} = this._getGeometry(actor);
+
+        return x >= actorX - slack && x < actorX + width + slack &&
+            y >= actorY - slack && y < actorY + height + slack;
+    }
+
+    /**
+     * @param {St.BoxLayout} box a panel box.
+     * @returns {Clutter.Actor|null} the fold button, if it is in that box.
+     */
+    _getFoldButtonContainer(box) {
+        const container = this._foldButton?.container;
+
+        return container?.get_parent() === box ? container : null;
+    }
+
     destroy() {
+        this._cancelDrag();
+
         if (this._repositionId) {
             GLib.source_remove(this._repositionId);
             delete this._repositionId;
         }
+
+        for (const icon of [...this._dragHandlers.keys()])
+            this._teardownDrag(icon);
+        this._dragHandlers.clear();
 
         this._releaseLanguageArea();
         this._trayIcons.clear();

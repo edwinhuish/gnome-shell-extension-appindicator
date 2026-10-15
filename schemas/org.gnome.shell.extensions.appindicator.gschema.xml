@@ -51,6 +51,11 @@
       <summary>Hidden icons</summary>
       <description>Indicators that are collected in the floating panel below the panel, instead of the tray area</description>
     </key>
+    <key name="icon-order" type="as">
+      <default>[]</default>
+      <summary>Icon order</summary>
+      <description>Order the tray icons are shown in, as indicator ids: the icons of the tray area first, then the ones of the hidden icons panel</description>
+    </key>
     <key name="known-icons" type="a(ss)">
       <default>[]</default>
       <summary>Known icons</summary>

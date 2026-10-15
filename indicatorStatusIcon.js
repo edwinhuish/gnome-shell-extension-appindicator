@@ -174,6 +174,12 @@ class IndicatorBaseStatusIcon extends PanelMenu.Button {
         this.visible = this.isReady();
     }
 
+    /**
+     * The icon may not act on the click that has been pressed to start a drag.
+     */
+    cancelPendingClicks() {
+    }
+
     _onHoverChanged() {
         if (this.hover) {
             this.opacity = 255;
@@ -393,6 +399,10 @@ class IndicatorStatusIcon extends BaseStatusIcon {
             this._indicator.checkAlive().catch(logError);
     }
 
+    cancelPendingClicks() {
+        this._waitDoubleClickPromise?.cancel();
+    }
+
     _updateMenu() {
         if (this._menuClient) {
             this._menuClient.disconnect(this._menuReadyId);
@@ -585,6 +595,10 @@ class IndicatorTrayIcon extends BaseStatusIcon {
 
     isReady() {
         return !!this._icon;
+    }
+
+    cancelPendingClicks() {
+        this._touchDelayPromise?.cancel();
     }
 
     get uniqueId() {
