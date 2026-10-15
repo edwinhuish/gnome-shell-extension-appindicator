@@ -953,12 +953,17 @@ const StTextureCacheSkippingFileIcon = GObject.registerClass({
 
 export const IconActor = GObject.registerClass(
 class AppIndicatorsIconActor extends St.Icon {
+    /**
+     * The spacing between the tray icons is what compact mode used to tweak by
+     * dropping the padding and margins the shell theme puts around panel icons.
+     * It is now driven by a single setting, so the theme spacing is always
+     * replaced by the space the user asked for.
+     */
     static get DEFAULT_STYLE() {
         const settings = SettingsManager.getDefaultGSettings();
-        if (!settings.get_boolean('compact-mode-enabled'))
-            return 'padding: 0';
-        else
-            return 'padding: 0; margin: 0';
+        const spacing = settings.get_int('tray-icon-spacing');
+
+        return `padding: 0 ${spacing}px; margin: 0`;
     }
 
     static get USER_WRITABLE_PATHS() {

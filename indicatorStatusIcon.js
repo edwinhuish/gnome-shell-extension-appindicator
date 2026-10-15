@@ -80,7 +80,7 @@ class IndicatorBaseStatusIcon extends PanelMenu.Button {
         const settings = SettingsManager.getDefaultGSettings();
         Util.connectSmart(settings, 'changed::icon-opacity', this, this._updateOpacity);
         Util.connectSmart(settings, 'changed::tray-icon-spacing', this,
-            this._updateIconSpacing);
+            this.applyIconSpacing);
         this.connect('notify::hover', () => this._onHoverChanged());
 
         if (!super._onDestroy)
@@ -110,6 +110,9 @@ class IndicatorBaseStatusIcon extends PanelMenu.Button {
 
         if (this._icon) {
             this._box.add_child(this._icon);
+            // Tray icons that are not appindicators (legacy X11 ones) don't set
+            // this up themselves, unlike IconActor.
+            this._icon.set_style(AppIndicator.IconActor.DEFAULT_STYLE);
             const id = this._icon.connect('destroy', () => {
                 this._icon.disconnect(id);
                 this._icon = null;
@@ -221,9 +224,6 @@ class IndicatorBaseStatusIcon extends PanelMenu.Button {
 
             Util.disconnectSmart(settings, this, this._iconContrastIds);
             delete this._iconContrastIds;
-
-            Util.disconnectSmart(settings, this, this._compactModeEnabledIds);
-            delete this._compactModeEnabledIds;
         } else if (this._icon && !monitoring) {
             this._iconSaturationIds =
                 Util.connectSmart(settings, 'changed::icon-saturation', this,
@@ -234,34 +234,42 @@ class IndicatorBaseStatusIcon extends PanelMenu.Button {
             this._iconContrastIds =
                 Util.connectSmart(settings, 'changed::icon-contrast', this,
                     this._updateBrightnessContrast);
-            this._compactModeEnabledIds =
-                Util.connectSmart(settings, 'changed::compact-mode-enabled', this,
-                    this._updateCompactMode);
         }
     }
 
+    /**
+     * The spacing is carried by the icon itself, see IconActor.DEFAULT_STYLE,
+     * the panel button must not add any padding of its own on top of it.
+     *
+     * Clutter keeps the natural size of an actor at or above its minimum size,
+     * and the shell theme asks for a minimum padding of its own, so that one
+     * has to go as well for small spacings to be honoured.
+     */
     static get DEFAULT_STYLE() {
-        const settings = SettingsManager.getDefaultGSettings();
-        const spacing = settings.get_int('tray-icon-spacing');
-
-        // A spacing explicitly chosen by the user always wins over the
-        // compact mode default.
-        if (spacing > 0)
-            return `-natural-hpadding: ${spacing}px`;
-
-        if (!settings.get_boolean('compact-mode-enabled'))
-            return null; // drop to default -natural-hpadding.
-
-        return '-natural-hpadding: 10px';
+        return '-natural-hpadding: 0px; -minimum-hpadding: 0px';
     }
 
-    _updateCompactMode() {
-        this._icon.set_style(AppIndicator.IconActor.DEFAULT_STYLE);
-        this.set_style(IndicatorBaseStatusIcon.DEFAULT_STYLE);
-    }
+    /**
+     * Applies the spacing the user picked in the preferences, so that moving
+     * the "Icon Spacing" slider is visible in the panel right away.
+     */
+    applyIconSpacing() {
+        if (this._icon)
+            this._icon.set_style(AppIndicator.IconActor.DEFAULT_STYLE);
 
-    _updateIconSpacing() {
         this.set_style(IndicatorBaseStatusIcon.DEFAULT_STYLE);
+
+        // St keeps the size it computed for an actor until a relayout is
+        // requested, and changing the inline style alone does not invalidate
+        // it: without this the panel would only pick the new spacing up once
+        // something else happens to relayout it, which looks like the setting
+        // does nothing at all. Every actor between the icon and the panel is
+        // asked to lay itself out again, so that the width the panel reserved
+        // for this icon follows the slider.
+        for (const actor of [this._icon, this._box, this, this.container]) {
+            if (actor)
+                actor.queue_relayout();
+        }
     }
 
     _updateSaturation() {
