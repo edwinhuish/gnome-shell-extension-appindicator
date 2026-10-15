@@ -1,4 +1,4 @@
-/* exported  GeneralPage*/
+/* exported  CustomIconPage*/
 
 import Adw from 'gi://Adw';
 import Gtk from 'gi://Gtk';
@@ -81,6 +81,17 @@ const IconData = GObject.registerClass({
     }
 });
 
+/**
+ * The three columns of the list: the title shown to the user, the name the
+ * icon data is reached with in JavaScript and the name of the GObject property
+ * holding it.
+ */
+const COLUMNS = [
+    {title: _('Indicator ID'), accessor: 'id', property: 'id'},
+    {title: _('Icon Name'), accessor: 'name', property: 'name'},
+    {title: _('Attention Icon Name'), accessor: 'atName', property: 'at-name'},
+];
+
 export var CustomIconPage = GObject.registerClass(
 class AppIndicatorCustomIconPage extends Adw.PreferencesPage {
     _init(settings, settingsKey) {
@@ -104,15 +115,10 @@ class AppIndicatorCustomIconPage extends Adw.PreferencesPage {
             item_type: IconData,
         });
 
-        const initList = this._settings.get_value(this._settingsKey.CUSTOM_ICONS).deep_unpack();
-        initList.forEach(pair => {
-            let data = new IconData({
-                id: pair[0],
-                name: pair[1],
-                atName: pair[2],
-            });
+        // An indicator can only be customized once, so entries stored more than
+        // once (by an older version of this page) are collapsed here.
+        for (const data of this._initialIcons())
             this.listStore.append(data);
-        });
 
         this.listStore.append(new IconData({id: '', name: '', atName: ''}));
 
@@ -126,71 +132,15 @@ class AppIndicatorCustomIconPage extends Adw.PreferencesPage {
             reorderable: false,
         });
 
-        const columnTitles =  [
-            _('Indicator ID'),
-            _('Icon Name'),
-            _('Attention Icon Name'),
-        ];
-        const indicatorIdColumn = new Gtk.ColumnViewColumn({
-            title: columnTitles[0],
-            expand: true,
-        });
-        const iconNameColumn = new Gtk.ColumnViewColumn({
-            title: columnTitles[1],
-            expand: true,
-        });
-        const attentionIconNameColumn = new Gtk.ColumnViewColumn({
-            title: columnTitles[2],
-            expand: true,
-        });
+        for (const column of COLUMNS) {
+            const viewColumn = new Gtk.ColumnViewColumn({
+                title: column.title,
+                expand: true,
+            });
+            viewColumn.set_factory(this._createEntryFactory(column));
 
-
-        const factoryId = new Gtk.SignalListItemFactory();
-        factoryId.connect('setup', (_widget, item) => {
-            const entry = new Gtk.Entry({hexpand: true, max_width_chars: 20});
-            item.set_child(entry);
-        });
-        factoryId.connect('bind', (_widget, item) => {
-            const entry = item.get_child();
-            const data = item.get_item();
-            entry.set_text(data.id);
-            entry.bind_property('text', data, 'id', GObject.BindingFlags.SYNC_CREATE);
-            entry.connect('changed', () => this._autoSave(item));
-        });
-
-        const factoryName = new Gtk.SignalListItemFactory();
-        factoryName.connect('setup', (_widget, item) => {
-            const entry = new Gtk.Entry({hexpand: true, max_width_chars: 20});
-            item.set_child(entry);
-        });
-        factoryName.connect('bind', (_widget, item) => {
-            const entry = item.get_child();
-            const data = item.get_item();
-            entry.set_text(data.name);
-            entry.bind_property('text', data, 'name', GObject.BindingFlags.SYNC_CREATE);
-            entry.connect('changed', () => this._autoSave(item));
-        });
-
-        const factoryItName = new Gtk.SignalListItemFactory();
-        factoryItName.connect('setup', (_widget, item) => {
-            const entry = new Gtk.Entry({hexpand: true, max_width_chars: 20});
-            item.set_child(entry);
-        });
-        factoryItName.connect('bind', (_widget, item) => {
-            const entry = item.get_child();
-            const data = item.get_item();
-            entry.set_text(data.atName);
-            entry.bind_property('text', data, 'at-name', GObject.BindingFlags.SYNC_CREATE);
-            entry.connect('changed', () => this._autoSave(item));
-        });
-
-        indicatorIdColumn.set_factory(factoryId);
-        iconNameColumn.set_factory(factoryName);
-        attentionIconNameColumn.set_factory(factoryItName);
-
-        this.columnView.append_column(indicatorIdColumn);
-        this.columnView.append_column(iconNameColumn);
-        this.columnView.append_column(attentionIconNameColumn);
+            this.columnView.append_column(viewColumn);
+        }
 
         this.container.append(this.columnView);
 
@@ -198,43 +148,161 @@ class AppIndicatorCustomIconPage extends Adw.PreferencesPage {
         this.add(this.group);
     }
 
-    _autoSave(item) {
-        const storeLength = this.listStore.get_n_items();
-        const newStore = [];
+    /**
+     * @returns {IconData[]} the custom icons that are stored, one per indicator.
+     */
+    _initialIcons() {
+        const customIcons = new Map();
 
-        for (let i = 0; i < storeLength; i++) {
-            const currentItem = this.listStore.get_item(i);
-            const id = currentItem.id;
-            const name = currentItem.name;
-            const atName = currentItem.atName;
+        for (const [id, name, atName] of this._settings
+            .get_value(this._settingsKey.CUSTOM_ICONS).deep_unpack()) {
             if (id && name)
-                newStore.push([id, name, atName || '']);
+                customIcons.set(id, new IconData({id, name, atName}));
+        }
+
+        return [...customIcons.values()];
+    }
+
+    /**
+     * Builds the factory editing one property of the custom icons.
+     *
+     * The view recycles its widgets, so the entry is wired up once and then
+     * bound to the row it currently shows. Connecting the handler again on
+     * every bind would run the same edit several times and the list would end
+     * up holding the same custom icon more than once.
+     *
+     * @param {object} column the column to build the factory for.
+     * @returns {Gtk.SignalListItemFactory} the factory.
+     */
+    _createEntryFactory(column) {
+        const factory = new Gtk.SignalListItemFactory();
+
+        factory.connect('setup', (_factory, item) => {
+            const entry = new Gtk.Entry({hexpand: true, max_width_chars: 20});
+
+            entry.connect('changed', () => {
+                if (entry._updating)
+                    return;
+
+                this._autoSave(entry);
+            });
+
+            item.set_child(entry);
+        });
+
+        factory.connect('bind', (_factory, item) => {
+            const entry = item.get_child();
+            const data = item.get_item();
+
+            entry._data = data;
+            entry._updating = true;
+
+            // The entry is recycled, so it is filled with the row it shows now
+            // before the binding may write its old text back into the data.
+            entry.set_text(data[column.accessor] ?? '');
+            entry._binding = entry.bind_property('text', data, column.property,
+                GObject.BindingFlags.SYNC_CREATE);
+
+            entry._updating = false;
+        });
+
+        factory.connect('unbind', (_factory, item) => {
+            const entry = item.get_child();
+
+            entry._binding?.unbind();
+            delete entry._binding;
+            delete entry._data;
+        });
+
+        return factory;
+    }
+
+    /**
+     * Stores what the user typed, and adds an empty row behind the last one so
+     * that another icon can be added.
+     *
+     * @param {Gtk.Entry} entry the entry the user typed into.
+     */
+    _autoSave(entry) {
+        const data = entry._data;
+
+        if (!data)
+            return;
+
+        this._storeCustomIcons();
+
+        if (!data.id && !data.name)
+            return;
+
+        let position = -1;
+        for (let i = 0; i < this.listStore.get_n_items(); i++) {
+            if (this.listStore.get_item(i) === data) {
+                position = i;
+                break;
+            }
+        }
+
+        // Filling in the row at the end of the list adds a new empty one.
+        if (position === this.listStore.get_n_items() - 1) {
+            this.listStore.append(new IconData({id: '', name: '', atName: ''}));
+            return;
+        }
+
+        // The row may now hold an indicator that is customized further up in
+        // the list already, in which case the older entry goes away.
+        this._queueDuplicateCleanup();
+    }
+
+    /**
+     * Writes the list of custom icons, dropping the rows that are not filled in
+     * and keeping only one entry per indicator.
+     */
+    _storeCustomIcons() {
+        const customIcons = new Map();
+
+        for (let i = 0; i < this.listStore.get_n_items(); i++) {
+            const {id, name, atName} = this.listStore.get_item(i);
+
+            if (id && name)
+                customIcons.set(id, [id, name, atName || '']);
         }
 
         this._settings.set_value(this._settingsKey.CUSTOM_ICONS,
-            new GLib.Variant('a(sss)', newStore));
+            new GLib.Variant('a(sss)', [...customIcons.values()]));
+    }
 
-        const id = item.get_item().id;
-        const name = item.get_item().name;
+    /**
+     * Removes the rows that customize an indicator an other row already
+     * customizes, so that the same custom icon is only ever listed once.
+     *
+     * The rows are never touched while one of their widgets emits a signal,
+     * that would tear down the widget we are called from.
+     */
+    _queueDuplicateCleanup() {
+        if (this._cleanupId)
+            return;
 
-        /* dynamic new entry*/
-        if (storeLength === 1 && (id || name))
-            this.listStore.append(new IconData({id: '', name: '', atName: ''}));
+        this._cleanupId = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+            delete this._cleanupId;
+            this._removeDuplicateRows();
+            return GLib.SOURCE_REMOVE;
+        });
+    }
 
-        if (storeLength > 1) {
-            if ((id || name) && item.get_position() >= storeLength - 1)
-                this.listStore.append(new IconData({id: '', name: '', atName: ''}));
+    _removeDuplicateRows() {
+        const seen = new Set();
+
+        // Back to front, so that the row the user just edited is the one kept.
+        for (let i = this.listStore.get_n_items() - 1; i >= 0; i--) {
+            const {id, name} = this.listStore.get_item(i);
+
+            if (!id || !name)
+                continue;
+
+            if (seen.has(id))
+                this.listStore.remove(i);
+            else
+                seen.add(id);
         }
     }
-
-    _autoDelete(item) {
-        const storeLength = this.listStore.get_n_items();
-        const id = item.get_item().id;
-        const name = item.get_item().name;
-        if (storeLength > 1 && !id && !name &&
-            item.get_position() < storeLength - 1)
-            this.listStore.remove(item.get_position());
-    }
 });
-
-
