@@ -32,6 +32,22 @@ gnome-extensions enable appindicatorsupport@rgcjonas.gmail.com
 Under X11, you may need to restart GNOME Shell (<kbd>Alt</kbd>+<kbd>F2</kbd>, <kbd>r</kbd>, <kbd>⏎</kbd>)
 after that. Under Wayland you need to logout and login again.
 
+### Build and package
+
+The `Makefile` wraps the meson/ninja commands:
+
+```bash
+make build     # configure and compile
+make install   # install into the extension directory
+make check     # run the test suite
+make pack      # create <uuid>.zip for extensions.gnome.org
+make help      # list the available variables
+```
+
+Since GNOME 45 extensions can no longer be hot-plugged, the shell has to be reloaded after
+every install: on X11 with <kbd>Alt</kbd>+<kbd>F2</kbd> <kbd>r</kbd>, on Wayland by logging
+out and back in.
+
 ### Applications dependencies
 
 Many applications support indicators via [libappindicator](https://launchpad.net/libappindicator),
@@ -54,7 +70,8 @@ This section serves as reminder for the current maintainer and as instruction se
 * The maintainer decides when to release a new version.
 * Versions are tagged (and signed). Version numbers sould be kept in sync with the versions submitted to `extensions.gnome.org`.
   This implies that version numbers are integers which will be incremented with each release.
-* The maintainer will tag a new version, update the meson version and generate a zip file using `ninja -C <build-dir> zip-file`.
+* The maintainer will tag a new version, update the meson version and generate a zip file using `make pack`
+  (which writes `<uuid>.zip` in the source tree).
 * The zip file will be tested to ensure that nothing was missed when packaging it.
 * Only if it passed, it is uploaded to `extensions.gnome.org` and the tag is pushed.
 
