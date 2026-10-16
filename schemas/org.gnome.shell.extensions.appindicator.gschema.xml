@@ -49,7 +49,7 @@
     <key name="hidden-icons" type="as">
       <default>[]</default>
       <summary>Hidden icons</summary>
-      <description>Indicators that are collected in the floating panel below the panel, instead of the tray area</description>
+      <description>Indicators that are collected in the floating panel next to the panel bar, instead of the tray area</description>
     </key>
     <key name="icon-order" type="as">
       <default>[]</default>

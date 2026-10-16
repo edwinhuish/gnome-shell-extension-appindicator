@@ -36,7 +36,7 @@ const PANEL_BOX_NAMES = ['left', 'center', 'right'];
 /** Pixels the pointer has to move before a press turns into a drag. */
 const DRAG_THRESHOLD = 8;
 
-/** Gap between the panel bar and the floating panel below it. */
+/** Gap the floating panel keeps to the panel bar it is put next to. */
 const PANEL_GAP = 6;
 
 /**
@@ -101,9 +101,11 @@ class AppIndicatorTrayFoldButton extends PanelMenu.Button {
  * language area (see addIconToPanel() in indicatorStatusIcon.js).
  *
  * Icons the user does not want in the panel bar are kept in a floating panel
- * below it, which the fold button shows and hides. Both areas can be
- * rearranged by dragging the icons around, and an icon can be dragged from one
- * area into the other one.
+ * next to it, which the fold button shows and hides. The floating panel is put
+ * on the free side of the bar, i.e. below a bar that sits at the top of the
+ * screen and above a bar that sits at the bottom, so that the two never
+ * overlap. Both areas can be rearranged by dragging the icons around, and an
+ * icon can be dragged from one area into the other one.
  */
 export class PanelAreas extends Signals.EventEmitter {
     static initialize() {
@@ -161,6 +163,20 @@ export class PanelAreas extends Signals.EventEmitter {
         Util.connectSmart(settings, 'changed::tray-icon-spacing', this,
             () => this._queuePanelReposition());
         Util.connectSmart(Main.sessionMode, 'updated', this, () => this.relayout());
+
+        // The floating panel follows the bar it is put next to, so it has to be
+        // repositioned when the bar moves to the other side of the screen or
+        // changes its height (another icon size, another theme, ...).
+        Util.connectSmart(Main.layoutManager.panelBox, 'notify::allocation', this,
+            () => this._queuePanelReposition());
+
+        if (Main.panel) {
+            Util.connectSmart(Main.panel, 'notify::allocation', this,
+                () => this._queuePanelReposition());
+        }
+
+        Util.connectSmart(Main.layoutManager, 'monitors-changed', this,
+            () => this.relayout());
 
         this.relayout();
     }
@@ -683,7 +699,10 @@ export class PanelAreas extends Signals.EventEmitter {
     }
 
     /**
-     * Puts the floating panel right below the left end of the tray area.
+     * Puts the floating panel next to the left end of the tray area, on the
+     * free side of the panel bar: below a bar that is at the top of the screen
+     * and above a bar that is at the bottom, so that the panel never overlaps
+     * the bar, whatever its position and its height are.
      */
     _updateHiddenPanelPosition() {
         const panel = this._hiddenPanel;
@@ -698,13 +717,67 @@ export class PanelAreas extends Signals.EventEmitter {
             return;
 
         const {x, y, width, height} = this._getGeometry(anchor);
+        const bar = this._getPanelBar();
         const [, panelWidth] = panel.get_preferred_width(-1);
+        const [, panelHeight] = panel.get_preferred_height(-1);
 
         const minX = monitor.x + PANEL_GAP;
         const maxX = monitor.x + monitor.width - panelWidth - PANEL_GAP;
 
-        panel.set_position(Math.round(Math.min(Math.max(x + width - panelWidth, minX),
-            maxX)), Math.round(y + height + PANEL_GAP));
+        // Without a bar to measure, the anchor is what the panel is put next
+        // to, which is where the bar would have been.
+        const wantedY = bar?.atBottom
+            ? bar.y - PANEL_GAP - panelHeight
+            : (bar ? bar.y + bar.height : y + height) + PANEL_GAP;
+
+        // The panel stays on the screen, even when it does not fit next to the
+        // bar anymore.
+        const minY = monitor.y + PANEL_GAP;
+        const maxY = monitor.y + monitor.height - panelHeight - PANEL_GAP;
+
+        panel.set_position(
+            Math.round(Math.min(Math.max(x + width - panelWidth, minX), maxX)),
+            Math.round(Math.min(Math.max(wantedY, minY), maxY)));
+    }
+
+    /**
+     * The vertical geometry of the panel bar the extension areas live in.
+     *
+     * The bar is measured instead of taken for granted: the shell puts it at
+     * the top of the screen, but the layouts of other desktops (Ubuntu's own
+     * one, for instance) and the panel extensions move it to the bottom, and
+     * its height changes with the theme and with the icons that are in it.
+     *
+     * @returns {{y: number, height: number, atBottom: boolean}|null} the top,
+     *   the height and the side of the screen of the bar, or null when it
+     *   cannot be measured.
+     */
+    _getPanelBar() {
+        const monitor = Main.layoutManager.primaryMonitor;
+
+        if (!monitor)
+            return null;
+
+        // The bar itself is what gets measured. The panel box that holds it is
+        // the fallback for the moments where the bar has no size yet, e.g.
+        // while the shell is still building the panel.
+        let geometry = Main.panel ? this._getGeometry(Main.panel) : null;
+
+        if (!geometry?.height)
+            geometry = this._getGeometry(Main.layoutManager.panelBox);
+
+        if (!geometry.height)
+            return null;
+
+        const {y, height} = geometry;
+
+        // A bar whose middle sits in the lower half of the screen is a bar at
+        // the bottom, whatever put it there.
+        return {
+            y,
+            height,
+            atBottom: y + height / 2 > monitor.y + monitor.height / 2,
+        };
     }
 
     /**

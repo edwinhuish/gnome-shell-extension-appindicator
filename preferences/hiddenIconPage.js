@@ -22,9 +22,11 @@ class AppIndicatorHiddenIconPage extends Adw.PreferencesPage {
 
         this._group = new Adw.PreferencesGroup({
             title: _('Tray Icons'),
-            description: _('Icons that are collected in the floating panel below ' +
-                'the panel, instead of the tray area. Use the fold button in the ' +
-                'panel to show and hide them, or drag an icon onto the panel.'),
+            description: _('Icons that are collected in the floating panel next ' +
+                'to the panel bar, instead of the tray area: it opens below the ' +
+                'bar when the bar is at the top of the screen and above the bar ' +
+                'when the bar is at the bottom. Use the fold button in the panel ' +
+                'to show and hide it, or drag an icon onto the panel.'),
         });
 
         this._entryGroup = new Adw.PreferencesGroup({
