@@ -1394,6 +1394,13 @@ class AppIndicatorsIconActor extends St.Icon {
     }
 
     _setImageContent(content, width, height) {
+        // The content is painted by the actor itself, over the whole box it has
+        // been given, while the texture St.Icon loads from the gicon is a child
+        // of the actor laid out at the icon size. Both of them are painted when
+        // they are set at the same time, at different sizes, on top of each
+        // other, so the icon is drawn either from one or from the other.
+        this._clearGicon();
+
         this.set({
             content,
             width,
@@ -1401,6 +1408,37 @@ class AppIndicatorsIconActor extends St.Icon {
             contentGravity: Clutter.ContentGravity.RESIZE_ASPECT,
             fallbackIconName: null,
         });
+    }
+
+    /**
+     * Drops the icon St.Icon loads for us, if there is one, and lets the icon
+     * cache know it is not used anymore.
+     */
+    _clearGicon() {
+        if (!this.gicon)
+            return;
+
+        this._iconCache.updateActive(SNIconType.NORMAL,
+            this.gicon instanceof Gio.EmblemedIcon
+                ? this.gicon.get_icon() : this.gicon, false);
+
+        this.gicon = null;
+    }
+
+    /**
+     * Drops the content the actor paints itself, if there is one, and gives the
+     * icon the size it has without it (the size a content is painted at follows
+     * the size of the actor, see _setImageContent()).
+     */
+    _clearImageContent() {
+        if (!this.content)
+            return;
+
+        const {scaleFactor} = St.ThemeContext.get_for_stage(global.stage);
+
+        this.content = null;
+        this.width = -1;
+        this.height = this._iconSize * scaleFactor;
     }
 
     async _createIconFromPixmap(iconType, iconSize, iconScaling, scaleFactor, pixmapsVariant) {
@@ -1454,6 +1492,10 @@ class AppIndicatorsIconActor extends St.Icon {
                 if (this.gicon === gicon ||
                     (this.gicon && this.gicon.get_icon() === gicon))
                     return;
+
+                // Whatever the actor painted for the previous icon has to go,
+                // it would still be painted under the texture of this one.
+                this._clearImageContent();
 
                 if (gicon instanceof Gio.EmblemedIcon)
                     this.gicon = gicon;
