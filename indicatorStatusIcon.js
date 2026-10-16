@@ -167,8 +167,8 @@ class IndicatorBaseStatusIcon extends PanelMenu.Button {
 
     /**
      * Whether the icon itself has something to show. Whether it is displayed in
-     * the tray area or in the floating panel with the hidden icons is decided
-     * by the PanelAreas, which move the icon around and show or hide the panel.
+     * the tray area is decided by the PanelAreas, which move the icons around
+     * and fold the ones away that do not fit.
      */
     _updateVisibility() {
         this.visible = this.isReady();

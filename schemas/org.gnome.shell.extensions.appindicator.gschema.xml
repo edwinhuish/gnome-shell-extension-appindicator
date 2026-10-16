@@ -46,20 +46,16 @@
       <summary>Order in tray</summary>
       <description>Set where the Icon tray should appear among other trays</description>
     </key>
-    <key name="hidden-icons" type="as">
-      <default>[]</default>
-      <summary>Hidden icons</summary>
-      <description>Indicators that are collected in the floating panel next to the panel bar, instead of the tray area</description>
+    <key name="max-visible-icons" type="i">
+      <default>3</default>
+      <summary>Maximum visible icons</summary>
+      <description>How many tray icons are shown at once, the ones beyond that number are folded behind the button in the panel</description>
+      <range min="1" max="30"/>
     </key>
     <key name="icon-order" type="as">
       <default>[]</default>
       <summary>Icon order</summary>
-      <description>Order the tray icons are shown in, as indicator ids: the icons of the tray area first, then the ones of the hidden icons panel</description>
-    </key>
-    <key name="known-icons" type="a(ss)">
-      <default>[]</default>
-      <summary>Known icons</summary>
-      <description>Tray icons seen by the extension, as (id, name) pairs</description>
+      <description>Order the tray icons are shown in, as indicator ids</description>
     </key>
     <key name="custom-icons" type="a(sss)">
       <default>[]</default>

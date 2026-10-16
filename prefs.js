@@ -5,7 +5,6 @@
 import Gtk from 'gi://Gtk';  // will be removed
 import Gdk from 'gi://Gdk';
 import * as GeneralPreferences from './preferences/generalPage.js';
-import * as HiddenIconPreferences from './preferences/hiddenIconPage.js';
 import * as CustomIconPreferences from './preferences/customIconPage.js';
 
 import {
@@ -23,8 +22,7 @@ const SettingsKey = {
     ICON_BRIGHTNESS: 'icon-brightness',
     ICON_CONTRAST: 'icon-contrast',
     TRAY_POS: 'tray-pos',
-    HIDDEN_ICONS: 'hidden-icons',
-    KNOWN_ICONS: 'known-icons',
+    MAX_VISIBLE_ICONS: 'max-visible-icons',
     CUSTOM_ICONS: 'custom-icons',
 };
 
@@ -37,11 +35,9 @@ export default class DockPreferences extends ExtensionPreferences {
 
         const settings = this.getSettings();
         const generalPage = new GeneralPreferences.GeneralPage(settings, SettingsKey);
-        const hiddenIconPage = new HiddenIconPreferences.HiddenIconPage(settings, SettingsKey);
         const customIconPage = new CustomIconPreferences.CustomIconPage(settings, SettingsKey);
 
         window.add(generalPage);
-        window.add(hiddenIconPage);
         window.add(customIconPage);
 
         window.connect('close-request', () => {
