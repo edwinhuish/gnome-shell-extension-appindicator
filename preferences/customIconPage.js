@@ -81,17 +81,6 @@ const IconData = GObject.registerClass({
     }
 });
 
-/**
- * The three columns of the list: the title shown to the user, the name the
- * icon data is reached with in JavaScript and the name of the GObject property
- * holding it.
- */
-const COLUMNS = [
-    {title: _('Indicator ID'), accessor: 'id', property: 'id'},
-    {title: _('Icon Name'), accessor: 'name', property: 'name'},
-    {title: _('Attention Icon Name'), accessor: 'atName', property: 'at-name'},
-];
-
 export var CustomIconPage = GObject.registerClass(
 class AppIndicatorCustomIconPage extends Adw.PreferencesPage {
     _init(settings, settingsKey) {
@@ -132,7 +121,18 @@ class AppIndicatorCustomIconPage extends Adw.PreferencesPage {
             reorderable: false,
         });
 
-        for (const column of COLUMNS) {
+        // The three columns of the list: the title shown to the user, the name
+        // the icon data is reached with in JavaScript and the name of the
+        // GObject property holding it. The titles are translated here and not
+        // while the module is loaded, gettext resolves the extension from the
+        // call stack and refuses to run for a module being imported.
+        const columns = [
+            {title: _('Indicator ID'), accessor: 'id', property: 'id'},
+            {title: _('Icon Name'), accessor: 'name', property: 'name'},
+            {title: _('Attention Icon Name'), accessor: 'atName', property: 'at-name'},
+        ];
+
+        for (const column of columns) {
             const viewColumn = new Gtk.ColumnViewColumn({
                 title: column.title,
                 expand: true,
