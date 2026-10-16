@@ -44,6 +44,28 @@ const FOLD_ANIMATION_DURATION = 220;
  */
 const FOLDED_ICON_SCALE = 0.5;
 
+/**
+ * The space every panel item of ours keeps on both of its sides, in pixels per
+ * side, as the "Icon Spacing" setting in the preferences asks for it.
+ */
+const getIconSpacing = () =>
+    SettingsManager.getDefaultGSettings().get_int('tray-icon-spacing');
+
+/**
+ * The inline style that gives a panel button the spacing above.
+ *
+ * A PanelMenu.Button does not lay CSS padding out at all: it sizes itself from
+ * the -natural-hpadding/-minimum-hpadding of its theme node (see ButtonBox in
+ * the shell's panelMenu.js), so that is where the spacing of a panel item has
+ * to go. The shell theme asks for a padding of its own there, both values are
+ * written so that neither of them gets in the way.
+ */
+const getIconSpacingStyle = () => {
+    const spacing = getIconSpacing();
+
+    return `-natural-hpadding: ${spacing}px; -minimum-hpadding: ${spacing}px`;
+};
+
 let panelAreas;
 
 /**
@@ -79,6 +101,12 @@ class AppIndicatorTrayFoldButton extends PanelMenu.Button {
             style_class: 'system-status-icon',
             icon_name: TrayFoldButton.FOLDED_ICON,
         });
+
+        // The shell theme gives the icons inside a panel button a padding and a
+        // margin of their own. The arrow leaves the spacing around it to the
+        // button, which is where the user's icon spacing goes, see
+        // PanelAreas._applyIconSpacing().
+        this._foldIcon.set_style('padding: 0; margin: 0');
         this.add_child(this._foldIcon);
 
         this._foldGesture = new Clutter.ClickGesture();
@@ -167,6 +195,8 @@ export class PanelAreas extends Signals.EventEmitter {
         Util.connectSmart(settings, 'changed::icon-order', this,
             () => this._updateIconOrder());
         Util.connectSmart(settings, 'changed::icon-size', this, () => this.relayout());
+        Util.connectSmart(settings, 'changed::tray-icon-spacing', this,
+            () => this._updateIconSpacing());
         Util.connectSmart(Main.sessionMode, 'updated', this, () => this.relayout());
 
         this.relayout();
@@ -320,8 +350,10 @@ export class PanelAreas extends Signals.EventEmitter {
         }
 
         const indicator = this._getLanguageIndicator();
-        if (indicator)
+        if (indicator) {
+            this._applyIconSpacing(indicator);
             this._moveToBox(indicator.container, this._getBox(), 0);
+        }
 
         return indicator;
     }
@@ -368,10 +400,50 @@ export class PanelAreas extends Signals.EventEmitter {
         // placed right after it, whatever it shows.
         foldButton.container.visible = this._hasIconOverflow();
         foldButton.setExpanded(this._iconsExpanded);
+        this._applyIconSpacing(foldButton);
 
         this._moveToBox(foldButton.container, box, index);
 
         return foldButton;
+    }
+
+    /**
+     * Gives a panel item the spacing the user asked for.
+     *
+     * The language area and the fold button sit in the very same row as the tray
+     * icons, so they keep the same space on both of their sides: moving the "Icon
+     * Spacing" slider in the preferences has to move the gaps around them as
+     * well, not only the gaps between the tray icons.
+     *
+     * @param {PanelMenu.Button|null} indicator the panel item to space out.
+     */
+    _applyIconSpacing(indicator) {
+        if (!indicator)
+            return;
+
+        const style = getIconSpacingStyle();
+
+        // Placing the areas happens on every relayout, and a style that is
+        // already in place would only give the panel a relayout to do.
+        if (indicator.get_style() === style)
+            return;
+
+        indicator.set_style(style);
+
+        // St keeps the size it computed for an actor until a relayout is asked
+        // for, see applyIconSpacing() in indicatorStatusIcon.js.
+        for (const actor of [indicator, indicator.container]) {
+            if (actor)
+                actor.queue_relayout();
+        }
+    }
+
+    /**
+     * Brings the spacing of every panel item we own in line with the setting.
+     */
+    _updateIconSpacing() {
+        this._applyIconSpacing(this.languageArea);
+        this._applyIconSpacing(this._foldButton);
     }
 
     /**
@@ -620,6 +692,10 @@ export class PanelAreas extends Signals.EventEmitter {
     _releaseLanguageArea() {
         const adopted = this._adoptedLanguageIndicator;
         if (adopted) {
+            // The spacing the indicator was given goes with the area, the shell
+            // puts its own one back on once the setting is turned on again.
+            adopted.set_style('');
+
             // Hand the indicator back to the shell's session mode layout.
             for (const boxName of PANEL_BOX_NAMES) {
                 const roles = Main.sessionMode.panel[boxName] ?? [];

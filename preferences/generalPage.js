@@ -222,7 +222,7 @@ class AppIndicatorGeneralPage extends Adw.PreferencesPage {
 
         const row = new Adw.ActionRow({
             title: _('Icon Spacing'),
-            subtitle: _('Space each tray icon keeps on both of its sides'),
+            subtitle: _('Space the tray icons, the language area and the fold button keep on both of their sides'),
         });
         row.add_suffix(suffix);
 

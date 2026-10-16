@@ -33,7 +33,7 @@
     <key name="tray-icon-spacing" type="i">
       <default>10</default>
       <summary>Tray icon spacing</summary>
-      <description>Space each tray icon keeps on its left and right side in pixel, 0 packs the icons together without any space</description>
+      <description>Space the tray icons, the language area and the fold button keep on their left and right side in pixel, 0 packs them together without any space</description>
       <range min="0" max="32"/>
     </key>
     <key name="tray-pos" type="s">
