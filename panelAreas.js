@@ -52,12 +52,21 @@ let panelAreas;
  */
 export const TrayFoldButton = GObject.registerClass(
 class AppIndicatorTrayFoldButton extends PanelMenu.Button {
+    /**
+     * The icons that are folded away are the ones the button points at: it is
+     * at the left of the tray area, so its arrow points left while they are
+     * hidden and right once they are back next to it.
+     *
+     * The start/end arrows are used rather than the left/right ones the names
+     * suggest, so that the arrow follows the text direction of the shell: they
+     * are mirrored in a right to left session like the panel itself is.
+     */
     static get FOLDED_ICON() {
-        return 'pan-down-symbolic';
+        return 'pan-start-symbolic';
     }
 
     static get EXPANDED_ICON() {
-        return 'pan-up-symbolic';
+        return 'pan-end-symbolic';
     }
 
     _init() {
