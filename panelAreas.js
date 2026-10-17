@@ -137,7 +137,8 @@ class AppIndicatorTrayFoldButton extends PanelMenu.Button {
  * The tray area is the place where the tray icons are added, right after the
  * language area (see addIconToPanel() in indicatorStatusIcon.js). It only shows
  * the number of icons the user asked for, the ones beyond that number are
- * folded away behind the fold button, which shows and hides them again.
+ * folded away behind the fold button, which shows and hides them again. Icons
+ * that show nothing at all are not counted, see _visibleIcons().
  *
  * The icons of the tray area can be rearranged by dragging them around, in the
  * folded and in the unfolded state alike: the order the user drags them into is
@@ -271,6 +272,14 @@ export class PanelAreas extends Signals.EventEmitter {
 
         this._trayIcons.add(icon);
         this._setupDrag(icon);
+
+        // An icon gets something to show, or loses it, without showing up or
+        // leaving: an appindicator goes passive while its window is open, an
+        // icon is only ready once it has loaded its pixmap. That is one icon
+        // more or less for the tray area, so it is laid out again, see
+        // _visibleIcons(). The connection needs no teardown of its own: it sits
+        // on the icon, which is destroyed when it leaves the tray area.
+        icon.connect('notify::visible', () => this.relayout());
     }
 
     /**
@@ -282,8 +291,15 @@ export class PanelAreas extends Signals.EventEmitter {
         const known = this._trayIcons.delete(icon);
         this._foldedIcons.delete(icon);
 
-        if (this._drag?.icon === icon)
+        if (this._drag?.icon === icon) {
+            // Stopping the drag lays the areas out again on its own.
             this._cancelDrag();
+        } else if (known) {
+            // One icon less to fold: whether the fold button is still needed,
+            // and whether the icons it folded away fit into the tray area now,
+            // is decided again.
+            this.relayout();
+        }
 
         if (!known)
             return;
@@ -321,7 +337,8 @@ export class PanelAreas extends Signals.EventEmitter {
         this._placeFoldButton();
 
         const icons = this._sortedIcons();
-        const overflow = this._hasIconOverflow();
+        const visibleIcons = this._visibleIcons(icons);
+        const overflow = this._hasIconOverflow(visibleIcons);
 
         // With every icon fitting into the tray area there is nothing to unfold,
         // so the next one that shows up starts folded away again.
@@ -329,13 +346,18 @@ export class PanelAreas extends Signals.EventEmitter {
             this._iconsExpanded = false;
 
         const visibleCount = overflow && !this._iconsExpanded
-            ? this._maxVisibleIcons : icons.length;
+            ? this._maxVisibleIcons : visibleIcons.length;
 
         // The tray area starts right after the fold button, so that the
         // language area can never be pushed away by the tray icons.
         this._layoutBox(this._getBox(), this._getTrayStartIndex(), icons);
 
-        icons.forEach((icon, index) => this._foldIcon(icon, index >= visibleCount));
+        // Only the icons that show something take part in the fold, the others
+        // are never seen and keep whatever state they are in: an icon that gets
+        // something to show again is folded, or unfolded, right away, see
+        // registerTrayIcon().
+        visibleIcons.forEach((icon, index) =>
+            this._foldIcon(icon, index >= visibleCount));
     }
 
     /**
@@ -460,10 +482,12 @@ export class PanelAreas extends Signals.EventEmitter {
     }
 
     /**
+     * @param {BaseStatusIcon[]} [visibleIcons] the icons that show something,
+     *     see _visibleIcons().
      * @returns {boolean} whether there are more icons than the tray area shows.
      */
-    _hasIconOverflow() {
-        return this._trayIcons.size > this._maxVisibleIcons;
+    _hasIconOverflow(visibleIcons = this._visibleIcons()) {
+        return visibleIcons.length > this._maxVisibleIcons;
     }
 
     /**
@@ -481,6 +505,23 @@ export class PanelAreas extends Signals.EventEmitter {
         // Icons the user never dragged keep the order they showed up in.
         return allIcons.sort((a, b) =>
             orderIndex(a) - orderIndex(b) || positions.get(a) - positions.get(b));
+    }
+
+    /**
+     * The icons that show something right now, in display order.
+     *
+     * An icon that is not ready yet, and an icon the app asked for to stay
+     * hidden, shows nothing at all (see _updateVisibility() in
+     * indicatorStatusIcon.js): it is not part of what the tray area shows, so it
+     * takes part in neither the number of icons the tray area shows at once nor
+     * the fold.
+     *
+     * @param {BaseStatusIcon[]} [icons] the icons to pick from, in display
+     *     order.
+     * @returns {BaseStatusIcon[]} the icons that show something.
+     */
+    _visibleIcons(icons = this._sortedIcons()) {
+        return icons.filter(icon => icon.visible);
     }
 
     /**
