@@ -49,7 +49,7 @@
     <key name="max-visible-icons" type="i">
       <default>3</default>
       <summary>Maximum visible icons</summary>
-      <description>How many tray icons are shown at once, the ones beyond that number are folded behind the button in the panel</description>
+      <description>How many tray icons are shown at once, the ones beyond that number are collected in the floating panel opened by the button in the panel</description>
       <range min="1" max="30"/>
     </key>
     <key name="icon-order" type="as">

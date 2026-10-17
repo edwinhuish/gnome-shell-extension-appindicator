@@ -15,6 +15,7 @@
 // Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 import Clutter from 'gi://Clutter';
+import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
 import St from 'gi://St';
 
@@ -35,14 +36,24 @@ const PANEL_BOX_NAMES = ['left', 'center', 'right'];
 /** Pixels the pointer has to move before a press turns into a drag. */
 const DRAG_THRESHOLD = 8;
 
-/** How long an icon takes to appear in, or to leave, the tray area, in ms. */
-const FOLD_ANIMATION_DURATION = 220;
+/** Gap the floating panel keeps to the panel bar it is put next to. */
+const PANEL_GAP = 6;
 
 /**
- * How far an icon shrinks while it is folded away. The icon is faded out at
- * the same time, so it does not disappear abruptly.
+ * How many icons the floating panel puts in one row: the first limit that is
+ * bigger than the number of hidden icons decides the number of columns.
  */
-const FOLDED_ICON_SCALE = 0.5;
+const PANEL_COLUMN_STEPS = [
+    [4, 2],
+    [9, 3],
+    [16, 4],
+    [25, 5],
+    [36, 6],
+    [49, 7],
+];
+
+/** The floating panel never gets more columns than this. */
+const MAX_PANEL_COLUMNS = 8;
 
 /**
  * The space every panel item of ours keeps on both of its sides, in pixels per
@@ -69,37 +80,33 @@ const getIconSpacingStyle = () => {
 let panelAreas;
 
 /**
- * The button that sits between the language area and the tray area and shows
- * the icons that do not fit into the tray area.
+ * The button that sits between the language area and the tray area and opens
+ * the floating panel holding the icons the tray area does not show.
  */
 export const TrayFoldButton = GObject.registerClass(
 class AppIndicatorTrayFoldButton extends PanelMenu.Button {
     /**
-     * The icons that are folded away are the ones the button points at: it is
-     * at the left of the tray area, so its arrow points left while they are
-     * hidden and right once they are back next to it.
-     *
-     * The start/end arrows are used rather than the left/right ones the names
-     * suggest, so that the arrow follows the text direction of the shell: they
-     * are mirrored in a right to left session like the panel itself is.
+     * The panel is opened below the bar (above it when the bar sits at the
+     * bottom), so the arrow points down while the panel is closed and up while
+     * it is open.
      */
-    static get FOLDED_ICON() {
-        return 'pan-start-symbolic';
+    static get COLLAPSED_ICON() {
+        return 'pan-down-symbolic';
     }
 
-    static get EXPANDED_ICON() {
-        return 'pan-end-symbolic';
+    static get REVEALED_ICON() {
+        return 'pan-up-symbolic';
     }
 
     _init() {
-        // No menu: clicking this button only unfolds the tray icons.
-        super._init(0.5, 'More tray icons', true);
+        // No menu: clicking this button only opens the hidden icons panel.
+        super._init(0.5, 'Hidden tray icons', true);
 
         this.add_style_class_name('appindicator-fold-button');
 
         this._foldIcon = new St.Icon({
             style_class: 'system-status-icon',
-            icon_name: TrayFoldButton.FOLDED_ICON,
+            icon_name: TrayFoldButton.COLLAPSED_ICON,
         });
 
         // The shell theme gives the icons inside a panel button a padding and a
@@ -112,16 +119,16 @@ class AppIndicatorTrayFoldButton extends PanelMenu.Button {
         this._foldGesture = new Clutter.ClickGesture();
         this._foldGesture.set_recognize_on_press(true);
         this._foldGesture.connect('recognize',
-            () => PanelAreas.getDefault()?.toggleExpanded());
+            () => PanelAreas.getDefault()?.toggleHiddenIcons());
         this.add_action(this._foldGesture);
     }
 
     /**
-     * @param {boolean} expanded whether the tray area shows every icon.
+     * @param {boolean} revealed whether the floating panel is open.
      */
-    setExpanded(expanded) {
-        this._foldIcon.icon_name = expanded
-            ? TrayFoldButton.EXPANDED_ICON : TrayFoldButton.FOLDED_ICON;
+    setRevealed(revealed) {
+        this._foldIcon.icon_name = revealed
+            ? TrayFoldButton.REVEALED_ICON : TrayFoldButton.COLLAPSED_ICON;
     }
 });
 
@@ -136,13 +143,19 @@ class AppIndicatorTrayFoldButton extends PanelMenu.Button {
  *
  * The tray area is the place where the tray icons are added, right after the
  * language area (see addIconToPanel() in indicatorStatusIcon.js). It only shows
- * the number of icons the user asked for, the ones beyond that number are
- * folded away behind the fold button, which shows and hides them again. Icons
- * that show nothing at all are not counted, see _visibleIcons().
+ * the number of icons the user asked for, the ones beyond that number are kept
+ * in a floating panel next to the bar, which the fold button shows and hides.
+ * Icons that show nothing at all are not counted, see _visibleIcons().
  *
- * The icons of the tray area can be rearranged by dragging them around, in the
- * folded and in the unfolded state alike: the order the user drags them into is
- * the order the fold follows.
+ * The floating panel lays its icons out in a grid. Its width follows the number
+ * of icons it holds: two icons per row below four icons, three below nine, and
+ * so on up to eight per row, so that it stays roughly square and never turns
+ * into a single row wider than the screen. The floating panel is put on the
+ * free side of the bar, i.e. below a bar that sits at the top of the screen and
+ * above a bar that sits at the bottom, so that the two never overlap.
+ *
+ * The icons of the tray area can be rearranged by dragging them around: the
+ * order the user drags them into is the order the fold follows.
  */
 export class PanelAreas extends Signals.EventEmitter {
     static initialize() {
@@ -176,15 +189,18 @@ export class PanelAreas extends Signals.EventEmitter {
         this._dragHandlers = new Map();
 
         // The order the user dragged the icons into, how many of them the tray
-        // area shows at once, and whether the user unfolded the rest. The last
+        // area shows at once, and whether the floating panel is open. The last
         // one is the user's own state, the fold button is the only thing that
         // changes it, see _syncIcons().
         this._iconOrder = settings.get_strv('icon-order');
         this._maxVisibleIcons = settings.get_int('max-visible-icons');
         this._iconsExpanded = false;
 
-        // The icons that are folded away right now.
-        this._foldedIcons = new Set();
+        // The floating panel and the rows of the grid the hidden icons live in.
+        this._hiddenPanel = null;
+        this._hiddenPanelBox = null;
+        this._panelRows = [];
+        this._repositionId = 0;
 
         this._press = null;
         this._drag = null;
@@ -197,10 +213,28 @@ export class PanelAreas extends Signals.EventEmitter {
             () => this._updateMaxVisibleIcons());
         Util.connectSmart(settings, 'changed::icon-order', this,
             () => this._updateIconOrder());
-        Util.connectSmart(settings, 'changed::icon-size', this, () => this.relayout());
+        Util.connectSmart(settings, 'changed::icon-size', this, () => {
+            this.relayout();
+            // The icons take their new size after the setting was signalled.
+            this._queuePanelReposition();
+        });
         Util.connectSmart(settings, 'changed::tray-icon-spacing', this,
             () => this._updateIconSpacing());
         Util.connectSmart(Main.sessionMode, 'updated', this, () => this.relayout());
+
+        // The floating panel follows the bar it is put next to, so it has to be
+        // repositioned when the bar moves to the other side of the screen or
+        // changes its height (another icon size, another theme, ...).
+        Util.connectSmart(Main.layoutManager.panelBox, 'notify::allocation', this,
+            () => this._queuePanelReposition());
+
+        if (Main.panel) {
+            Util.connectSmart(Main.panel, 'notify::allocation', this,
+                () => this._queuePanelReposition());
+        }
+
+        Util.connectSmart(Main.layoutManager, 'monitors-changed', this,
+            () => this.relayout());
 
         this.relayout();
     }
@@ -291,15 +325,14 @@ export class PanelAreas extends Signals.EventEmitter {
         // The icon is forgotten first: it is on its way out, so it must not
         // take part in the relayout the cancelled drag does.
         const known = this._trayIcons.delete(icon);
-        this._foldedIcons.delete(icon);
 
         if (this._drag?.icon === icon) {
             // Stopping the drag lays the areas out again on its own.
             this._cancelDrag();
         } else if (known) {
-            // One icon less to fold: whether the fold button is still needed,
-            // and whether the icons it folded away fit into the tray area now,
-            // is decided again.
+            // One icon less to hide: whether the fold button is still needed,
+            // and whether the icons it kept in the floating panel fit into the
+            // tray area now, is decided again.
             this.relayout();
         }
 
@@ -310,10 +343,10 @@ export class PanelAreas extends Signals.EventEmitter {
     }
 
     /**
-     * Shows every tray icon, or folds the ones that do not fit into the tray
-     * area away again.
+     * Shows or hides the floating panel holding the icons the tray area does
+     * not show.
      */
-    toggleExpanded() {
+    toggleHiddenIcons() {
         if (!this._hasIconOverflow())
             return;
 
@@ -340,25 +373,24 @@ export class PanelAreas extends Signals.EventEmitter {
 
         const icons = this._sortedIcons();
         const visibleIcons = this._visibleIcons(icons);
-        const overflow = this._hasIconOverflow(visibleIcons);
 
-        // Whether the icons are unfolded is the user's own state, it survives
-        // the icons that show up or leave: the fold button is the only thing
-        // that changes it. With nothing to fold there is nothing to unfold
-        // either, and the fold button is not shown at all, see _placeFoldButton().
-        const visibleCount = overflow && !this._iconsExpanded
-            ? this._maxVisibleIcons : visibleIcons.length;
+        // Everything beyond the number of icons the user asked for lives in
+        // the floating panel, the rest stays in the tray area.
+        const trayIcons = visibleIcons.slice(0, this._maxVisibleIcons);
+        const hiddenIcons = visibleIcons.slice(this._maxVisibleIcons);
+
+        // Icons that show nothing are never seen: they are kept in the tray
+        // area, where they take no room, instead of the floating panel, so that
+        // the panel only counts the icons it actually shows.
+        const inactiveIcons = icons.filter(icon => !icon.visible);
 
         // The tray area starts right after the fold button, so that the
         // language area can never be pushed away by the tray icons.
-        this._layoutBox(this._getBox(), this._getTrayStartIndex(), icons);
+        this._layoutBox(this._getBox(), this._getTrayStartIndex(),
+            [...trayIcons, ...inactiveIcons]);
 
-        // Only the icons that show something take part in the fold, the others
-        // are never seen and keep whatever state they are in: an icon that gets
-        // something to show again is folded, or unfolded, right away, see
-        // registerTrayIcon().
-        visibleIcons.forEach((icon, index) =>
-            this._foldIcon(icon, index >= visibleCount));
+        this._layoutPanelIcons(hiddenIcons);
+        this._updatePanel();
     }
 
     /**
@@ -418,11 +450,11 @@ export class PanelAreas extends Signals.EventEmitter {
         if (languageArea && languageArea.container.get_parent() === box)
             index = box.get_children().indexOf(languageArea.container) + 1;
 
-        // The icon is only shown while there is something to fold away, but the
-        // container stays in the panel either way: the tray area is always
-        // placed right after it, whatever it shows.
+        // The button is only shown while there is something in the floating
+        // panel, but its container stays in the panel either way: the tray area
+        // is always placed right after it, whatever it shows.
         foldButton.container.visible = this._hasIconOverflow();
-        foldButton.setExpanded(this._iconsExpanded);
+        foldButton.setRevealed(this._iconsExpanded);
         this._applyIconSpacing(foldButton);
 
         this._moveToBox(foldButton.container, box, index);
@@ -467,6 +499,13 @@ export class PanelAreas extends Signals.EventEmitter {
     _updateIconSpacing() {
         this._applyIconSpacing(this.languageArea);
         this._applyIconSpacing(this._foldButton);
+
+        if (this._hiddenPanelBox)
+            this._hiddenPanelBox.spacing = Math.round(getIconSpacing() / 2);
+
+        // The spacing changes the width of the icons and of the fold button,
+        // which is what the floating panel is aligned with.
+        this._queuePanelReposition();
     }
 
     /**
@@ -555,84 +594,110 @@ export class PanelAreas extends Signals.EventEmitter {
         }
     }
 
+    /**
+     * How many icons the floating panel shows in one row.
+     *
+     * @param {number} count the number of icons in the panel.
+     * @returns {number} the number of columns.
+     */
+    _columnsForIconCount(count) {
+        for (const [limit, columns] of PANEL_COLUMN_STEPS) {
+            if (count < limit)
+                return columns;
+        }
+
+        return MAX_PANEL_COLUMNS;
+    }
+
+    /**
+     * Puts the icons the tray area does not show into the floating panel, in a
+     * grid whose number of columns follows the number of icons.
+     *
+     * @param {BaseStatusIcon[]} icons the icons, in display order.
+     */
+    _layoutPanelIcons(icons) {
+        if (!icons.length) {
+            this._clearPanelRows();
+            return;
+        }
+
+        const columns = this._columnsForIconCount(icons.length);
+        const rows = Math.ceil(icons.length / columns);
+
+        this._getHiddenPanelBox();
+        this._growPanelRows(rows);
+
+        icons.forEach((icon, index) => {
+            const row = this._panelRows[Math.floor(index / columns)];
+            const column = index % columns;
+            const actor = icon.container;
+
+            if (actor.get_parent() === row &&
+                row.get_children().indexOf(actor) === column)
+                return;
+
+            if (actor.get_parent())
+                actor.get_parent().remove_child(actor);
+
+            row.insert_child_at_index(actor,
+                Math.min(column, row.get_n_children()));
+        });
+
+        // The rows are trimmed only once the icons are placed: the ones that
+        // live in a row that is not needed anymore had to move first.
+        this._trimPanelRows(rows);
+    }
+
+    /**
+     * @param {number} count the number of rows the panel needs.
+     */
+    _growPanelRows(count) {
+        while (this._panelRows.length < count) {
+            const row = new St.BoxLayout({
+                orientation: Clutter.Orientation.HORIZONTAL,
+                style_class: 'appindicator-hidden-panel-row',
+            });
+
+            this._hiddenPanelBox.add_child(row);
+            this._panelRows.push(row);
+        }
+    }
+
+    /**
+     * Removes the rows the panel does not need anymore.
+     *
+     * Every icon is either in the tray area or in one of the rows that are kept
+     * by then, see _syncIcons(), so the rows that go are empty.
+     *
+     * @param {number} count the number of rows the panel needs.
+     */
+    _trimPanelRows(count) {
+        while (this._panelRows.length > count) {
+            const row = this._panelRows.pop();
+            row.destroy();
+        }
+    }
+
+    _clearPanelRows() {
+        for (const row of this._panelRows)
+            row.destroy();
+
+        this._panelRows = [];
+    }
+
     _updateIconOrder() {
         this._iconOrder = this._getSettings().get_strv('icon-order');
         this._syncIcons();
     }
 
     /**
-     * Picks the new limit up and folds the icons that do not fit anymore away.
-     * Whether the icons stay unfolded is the user's state, see _syncIcons().
+     * Picks the new limit up and moves the icons that do not fit anymore into
+     * the floating panel. Whether the panel stays open is the user's state, see
+     * _syncIcons().
      */
     _updateMaxVisibleIcons() {
         this._maxVisibleIcons = this._getSettings().get_int('max-visible-icons');
         this.relayout();
-    }
-
-    /**
-     * Shows one tray icon, or folds it away, with an animation.
-     *
-     * @param {BaseStatusIcon} icon the icon to show or fold away.
-     * @param {boolean} folded whether it has to leave the tray area.
-     */
-    _foldIcon(icon, folded) {
-        const actor = icon.container;
-
-        // Icons that are already where they belong are left alone, so that a
-        // relayout does not restart the animation of the icons that are on
-        // their way in or out.
-        if (folded === this._foldedIcons.has(icon))
-            return;
-
-        if (folded)
-            this._foldedIcons.add(icon);
-        else
-            this._foldedIcons.delete(icon);
-
-        // The icon shrinks towards its own middle, wherever it sits in the panel.
-        actor.set_pivot_point(0.5, 0.5);
-
-        if (folded) {
-            // The tray area gives the room of the icon up once it is gone, so
-            // the icons next to it move after the animation, not during it.
-            actor.ease({
-                opacity: 0,
-                scale_x: FOLDED_ICON_SCALE,
-                scale_y: FOLDED_ICON_SCALE,
-                duration: FOLD_ANIMATION_DURATION,
-                mode: Clutter.AnimationMode.EASE_OUT_QUAD,
-                onComplete: () => {
-                    actor.hide();
-                    this._resetIconAnimation(icon);
-                },
-            });
-        } else {
-            // Showing the icon takes its room back right away, the icon itself
-            // fades into the place its neighbours just made for it.
-            actor.show();
-            actor.opacity = 0;
-            actor.set_scale(FOLDED_ICON_SCALE, FOLDED_ICON_SCALE);
-            actor.ease({
-                opacity: 255,
-                scale_x: 1,
-                scale_y: 1,
-                duration: FOLD_ANIMATION_DURATION,
-                mode: Clutter.AnimationMode.EASE_OUT_QUAD,
-            });
-        }
-    }
-
-    /**
-     * Puts an icon that has been folded away back into the state it has when it
-     * is shown, so that it can be faded in again the next time it is needed.
-     *
-     * @param {BaseStatusIcon} icon the icon that is out of the tray area.
-     */
-    _resetIconAnimation(icon) {
-        const actor = icon.container;
-
-        actor.opacity = 255;
-        actor.set_scale(1, 1);
     }
 
     /**
@@ -646,6 +711,14 @@ export class PanelAreas extends Signals.EventEmitter {
             const icon = this._iconForContainer(child);
             if (icon)
                 order.push(icon.uniqueId);
+        }
+
+        for (const row of this._panelRows) {
+            for (const child of row.get_children()) {
+                const icon = this._iconForContainer(child);
+                if (icon)
+                    order.push(icon.uniqueId);
+            }
         }
 
         const known = new Set(order);
@@ -777,6 +850,180 @@ export class PanelAreas extends Signals.EventEmitter {
     }
 
     /*
+     * The floating panel with the hidden icons.
+     */
+
+    /**
+     * The box the hidden icons live in; the panel behind it is created on
+     * demand, and it stays hidden until the user opens it.
+     *
+     * @returns {St.BoxLayout} the box holding the grid of hidden icons.
+     */
+    _getHiddenPanelBox() {
+        if (!this._hiddenPanel) {
+            this._hiddenPanelBox = new St.BoxLayout({
+                orientation: Clutter.Orientation.VERTICAL,
+                style_class: 'appindicator-hidden-panel',
+                // The icons carry the spacing on both of their sides, half of
+                // it between two rows gives the grid the same rhythm.
+                spacing: Math.round(getIconSpacing() / 2),
+            });
+
+            // The shell theme styles this class like a floating menu, so the
+            // panel looks native in the dark and in the light theme alike.
+            this._hiddenPanel = new St.Bin({
+                style_class: 'popup-menu-content appindicator-hidden-panel-container',
+                child: this._hiddenPanelBox,
+                reactive: true,
+                visible: false,
+            });
+
+            Util.addActor(Main.uiGroup, this._hiddenPanel);
+        }
+
+        return this._hiddenPanelBox;
+    }
+
+    /**
+     * Shows or hides the floating panel.
+     */
+    _updatePanel() {
+        if (!this._hiddenPanel)
+            return;
+
+        const shouldShow = this._iconsExpanded && this._hasIconOverflow();
+
+        this._hiddenPanel.visible = shouldShow;
+
+        if (shouldShow)
+            this._updatePanelPosition();
+    }
+
+    /**
+     * Puts the floating panel next to the tray area, on the free side of the
+     * panel bar: below a bar that is at the top of the screen and above a bar
+     * that is at the bottom, so that the panel never overlaps the bar, whatever
+     * its position and its height are.
+     */
+    _updatePanelPosition() {
+        const panel = this._hiddenPanel;
+
+        if (!panel?.visible)
+            return;
+
+        const anchor = this._getHiddenPanelAnchor();
+        const monitor = Main.layoutManager.primaryMonitor;
+
+        if (!anchor || !monitor)
+            return;
+
+        const {x, y, width, height} = this._getGeometry(anchor);
+        const bar = this._getPanelBar();
+        const [, panelWidth] = panel.get_preferred_width(-1);
+        const [, panelHeight] = panel.get_preferred_height(-1);
+
+        const minX = monitor.x + PANEL_GAP;
+        const maxX = monitor.x + monitor.width - panelWidth - PANEL_GAP;
+
+        // Without a bar to measure, the anchor is what the panel is put next
+        // to, which is where the bar would have been.
+        const wantedY = bar?.atBottom
+            ? bar.y - PANEL_GAP - panelHeight
+            : (bar ? bar.y + bar.height : y + height) + PANEL_GAP;
+
+        // The panel stays on the screen, even when it does not fit next to the
+        // bar anymore.
+        const minY = monitor.y + PANEL_GAP;
+        const maxY = monitor.y + monitor.height - panelHeight - PANEL_GAP;
+
+        panel.set_position(
+            Math.round(Math.min(Math.max(x + width - panelWidth, minX), maxX)),
+            Math.round(Math.min(Math.max(wantedY, minY), maxY)));
+    }
+
+    /**
+     * The vertical geometry of the panel bar the extension areas live in.
+     *
+     * The bar is measured instead of taken for granted: the shell puts it at
+     * the top of the screen, but the layouts of other desktops (Ubuntu's own
+     * one, for instance) and the panel extensions move it to the bottom, and
+     * its height changes with the theme and with the icons that are in it.
+     *
+     * @returns {{y: number, height: number, atBottom: boolean}|null} the top,
+     *   the height and the side of the screen of the bar, or null when it
+     *   cannot be measured.
+     */
+    _getPanelBar() {
+        const monitor = Main.layoutManager.primaryMonitor;
+
+        if (!monitor)
+            return null;
+
+        // The bar itself is what gets measured. The panel box that holds it is
+        // the fallback for the moments where the bar has no size yet, e.g.
+        // while the shell is still building the panel.
+        let geometry = Main.panel ? this._getGeometry(Main.panel) : null;
+
+        if (!geometry?.height)
+            geometry = this._getGeometry(Main.layoutManager.panelBox);
+
+        if (!geometry.height)
+            return null;
+
+        const {y, height} = geometry;
+
+        // A bar whose middle sits in the lower half of the screen is a bar at
+        // the bottom, whatever put it there.
+        return {
+            y,
+            height,
+            atBottom: y + height / 2 > monitor.y + monitor.height / 2,
+        };
+    }
+
+    /**
+     * Repositions the floating panel once the icons had their say: their size
+     * only changes after we are notified about the setting, so the panel is
+     * moved on the next idle instead of right away.
+     */
+    _queuePanelReposition() {
+        if (!this._hiddenPanel?.visible || this._repositionId)
+            return;
+
+        this._repositionId = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+            this._repositionId = 0;
+            this._updatePanelPosition();
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
+    /**
+     * The actor the floating panel is aligned with: the fold button, which is
+     * the left end of the tray area while there is something to hide.
+     *
+     * @returns {Clutter.Actor|null} the actor to align with.
+     */
+    _getHiddenPanelAnchor() {
+        const box = this._getBox();
+
+        if (this._foldButton?.container.visible &&
+            this._foldButton.container.get_parent() === box)
+            return this._foldButton.container;
+
+        for (const child of box.get_children()) {
+            const icon = this._iconForContainer(child);
+            if (icon?.visible)
+                return child;
+        }
+
+        const {languageArea} = this;
+        if (languageArea?.container.get_parent() === box)
+            return languageArea.container;
+
+        return null;
+    }
+
+    /*
      * Dragging the icons around.
      */
 
@@ -821,7 +1068,11 @@ export class PanelAreas extends Signals.EventEmitter {
     }
 
     _onButtonPress(icon, event) {
-        if (event.get_button() !== Clutter.BUTTON_PRIMARY) {
+        // Only the icons of the tray area are dragged around: the order they
+        // are put in is what decides which of them end up in the panel, so a
+        // drag that starts in the panel has nothing to reorder.
+        if (event.get_button() !== Clutter.BUTTON_PRIMARY ||
+            icon.container.get_parent() !== this._getBox()) {
             this._press = null;
             return Clutter.EVENT_PROPAGATE;
         }
@@ -1092,21 +1343,35 @@ export class PanelAreas extends Signals.EventEmitter {
     destroy() {
         this._cancelDrag();
 
+        if (this._repositionId) {
+            GLib.source_remove(this._repositionId);
+            this._repositionId = 0;
+        }
+
         for (const icon of [...this._dragHandlers.keys()])
             this._teardownDrag(icon);
         this._dragHandlers.clear();
 
         this._releaseLanguageArea();
-
-        // The icons that are folded away have to be shown again: neither the
-        // limit nor the fold button stays behind when the extension goes away.
-        for (const icon of this._foldedIcons) {
-            icon.container.show();
-            this._resetIconAnimation(icon);
-        }
-
-        this._foldedIcons.clear();
         this._trayIcons.clear();
+
+        if (this._hiddenPanel) {
+            // Destroying the panel would destroy the icons living in it, so
+            // they are handed back to the panel box first.
+            const box = Main.panel ? this._getBox() : null;
+
+            if (box) {
+                for (const row of this._panelRows) {
+                    for (const child of [...row.get_children()])
+                        Util.addActor(box, child);
+                }
+            }
+
+            this._hiddenPanel.destroy();
+            this._hiddenPanel = null;
+            this._hiddenPanelBox = null;
+            this._panelRows = [];
+        }
 
         if (this._foldButton) {
             if (Main.panel)
