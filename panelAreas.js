@@ -40,6 +40,14 @@ const DRAG_THRESHOLD = 8;
 const PANEL_GAP = 6;
 
 /**
+ * Extra room around the floating panel. Once an icon is inside the panel the
+ * pointer may leave it by that much without the icon jumping back into the
+ * tray area, which would otherwise start a back and forth when the panel is
+ * resized by the icon that is being moved.
+ */
+const PANEL_SLACK = 16;
+
+/**
  * How many icons the floating panel puts in one row: the first limit that is
  * bigger than the number of hidden icons decides the number of columns.
  */
@@ -142,10 +150,10 @@ class AppIndicatorTrayFoldButton extends PanelMenu.Button {
  * pushed around by the tray icons (or by anything else) that show up later.
  *
  * The tray area is the place where the tray icons are added, right after the
- * language area (see addIconToPanel() in indicatorStatusIcon.js). It only shows
- * the number of icons the user asked for, the ones beyond that number are kept
- * in a floating panel next to the bar, which the fold button shows and hides.
- * Icons that show nothing at all are not counted, see _visibleIcons().
+ * language area (see addIconToPanel() in indicatorStatusIcon.js). Icons the
+ * user asked to hide are kept in a floating panel next to the bar, which the
+ * fold button shows and hides. Icons that show nothing at all are not counted,
+ * see _visibleIcons().
  *
  * The floating panel lays its icons out in a grid. Its width follows the number
  * of icons it holds: two icons per row below four icons, three below nine, and
@@ -154,8 +162,9 @@ class AppIndicatorTrayFoldButton extends PanelMenu.Button {
  * free side of the bar, i.e. below a bar that sits at the top of the screen and
  * above a bar that sits at the bottom, so that the two never overlap.
  *
- * The icons of the tray area can be rearranged by dragging them around: the
- * order the user drags them into is the order the fold follows.
+ * The icons can be rearranged by dragging them around, in the tray area and in
+ * the floating panel alike, and an icon can be dragged from one area into the
+ * other one: where it is dropped decides whether it is hidden.
  */
 export class PanelAreas extends Signals.EventEmitter {
     static initialize() {
@@ -188,12 +197,12 @@ export class PanelAreas extends Signals.EventEmitter {
         this._trayIcons = new Set();
         this._dragHandlers = new Map();
 
-        // The order the user dragged the icons into, how many of them the tray
-        // area shows at once, and whether the floating panel is open. The last
+        // The ids of the icons the user wants in the floating panel, the order
+        // they dragged the icons into, and whether the panel is open. The last
         // one is the user's own state, the fold button is the only thing that
         // changes it, see _syncIcons().
+        this._hiddenIcons = new Set(settings.get_strv('hidden-icons'));
         this._iconOrder = settings.get_strv('icon-order');
-        this._maxVisibleIcons = settings.get_int('max-visible-icons');
         this._iconsExpanded = false;
 
         // The floating panel and the rows of the grid the hidden icons live in.
@@ -204,13 +213,14 @@ export class PanelAreas extends Signals.EventEmitter {
 
         this._press = null;
         this._drag = null;
+        this._panelFrozen = false;
         this._capturedEventId = 0;
 
         Util.connectSmart(settings, 'changed::tray-pos', this, () => this.relayout());
         Util.connectSmart(settings, 'changed::language-area-enabled', this,
             () => this.relayout());
-        Util.connectSmart(settings, 'changed::max-visible-icons', this,
-            () => this._updateMaxVisibleIcons());
+        Util.connectSmart(settings, 'changed::hidden-icons', this,
+            () => this._updateHiddenIcons());
         Util.connectSmart(settings, 'changed::icon-order', this,
             () => this._updateIconOrder());
         Util.connectSmart(settings, 'changed::icon-size', this, () => {
@@ -308,6 +318,7 @@ export class PanelAreas extends Signals.EventEmitter {
 
         this._trayIcons.add(icon);
         this._setupDrag(icon);
+        this._publishKnownIcons();
 
         // An icon gets something to show, or loses it, without showing up or
         // leaving: an appindicator goes passive while its window is open, an
@@ -340,6 +351,7 @@ export class PanelAreas extends Signals.EventEmitter {
             return;
 
         this._teardownDrag(icon);
+        this._publishKnownIcons();
     }
 
     /**
@@ -347,7 +359,7 @@ export class PanelAreas extends Signals.EventEmitter {
      * not show.
      */
     toggleHiddenIcons() {
-        if (!this._hasIconOverflow())
+        if (!this._hasHiddenIcons())
             return;
 
         this._iconsExpanded = !this._iconsExpanded;
@@ -374,10 +386,12 @@ export class PanelAreas extends Signals.EventEmitter {
         const icons = this._sortedIcons();
         const visibleIcons = this._visibleIcons(icons);
 
-        // Everything beyond the number of icons the user asked for lives in
-        // the floating panel, the rest stays in the tray area.
-        const trayIcons = visibleIcons.slice(0, this._maxVisibleIcons);
-        const hiddenIcons = visibleIcons.slice(this._maxVisibleIcons);
+        // The icons the user hid live in the floating panel, the rest stays in
+        // the tray area.
+        const trayIcons = visibleIcons.filter(
+            icon => !this._hiddenIcons.has(icon.uniqueId));
+        const hiddenIcons = visibleIcons.filter(
+            icon => this._hiddenIcons.has(icon.uniqueId));
 
         // Icons that show nothing are never seen: they are kept in the tray
         // area, where they take no room, instead of the floating panel, so that
@@ -453,7 +467,7 @@ export class PanelAreas extends Signals.EventEmitter {
         // The button is only shown while there is something in the floating
         // panel, but its container stays in the panel either way: the tray area
         // is always placed right after it, whatever it shows.
-        foldButton.container.visible = this._hasIconOverflow();
+        foldButton.container.visible = this._hasHiddenIcons();
         foldButton.setRevealed(this._iconsExpanded);
         this._applyIconSpacing(foldButton);
 
@@ -522,12 +536,10 @@ export class PanelAreas extends Signals.EventEmitter {
     }
 
     /**
-     * @param {BaseStatusIcon[]} [visibleIcons] the icons that show something,
-     *     see _visibleIcons().
-     * @returns {boolean} whether there are more icons than the tray area shows.
+     * @returns {boolean} whether the user hid any icon.
      */
-    _hasIconOverflow(visibleIcons = this._visibleIcons()) {
-        return visibleIcons.length > this._maxVisibleIcons;
+    _hasHiddenIcons() {
+        return this._hiddenIcons.size > 0;
     }
 
     /**
@@ -552,9 +564,8 @@ export class PanelAreas extends Signals.EventEmitter {
      *
      * An icon that is not ready yet, and an icon the app asked for to stay
      * hidden, shows nothing at all (see _updateVisibility() in
-     * indicatorStatusIcon.js): it is not part of what the tray area shows, so it
-     * takes part in neither the number of icons the tray area shows at once nor
-     * the fold.
+     * indicatorStatusIcon.js): it is part of neither the tray area nor the
+     * floating panel, so it is not counted by either of them.
      *
      * @param {BaseStatusIcon[]} [icons] the icons to pick from, in display
      *     order.
@@ -628,6 +639,10 @@ export class PanelAreas extends Signals.EventEmitter {
         this._growPanelRows(rows);
 
         icons.forEach((icon, index) => {
+            // The icon that is being dragged is placed by the drag itself.
+            if (icon === this._drag?.icon)
+                return;
+
             const row = this._panelRows[Math.floor(index / columns)];
             const column = index % columns;
             const actor = icon.container;
@@ -667,22 +682,26 @@ export class PanelAreas extends Signals.EventEmitter {
      * Removes the rows the panel does not need anymore.
      *
      * Every icon is either in the tray area or in one of the rows that are kept
-     * by then, see _syncIcons(), so the rows that go are empty.
+     * by then, see _syncIcons(), so the rows that go are empty. A row that is
+     * not empty is left alone anyway: destroying it would destroy the icon it
+     * holds, and the icon that is being dragged may still be in it.
      *
      * @param {number} count the number of rows the panel needs.
      */
     _trimPanelRows(count) {
         while (this._panelRows.length > count) {
-            const row = this._panelRows.pop();
+            const row = this._panelRows[this._panelRows.length - 1];
+
+            if (row.get_n_children())
+                break;
+
+            this._panelRows.pop();
             row.destroy();
         }
     }
 
     _clearPanelRows() {
-        for (const row of this._panelRows)
-            row.destroy();
-
-        this._panelRows = [];
+        this._trimPanelRows(0);
     }
 
     _updateIconOrder() {
@@ -691,13 +710,50 @@ export class PanelAreas extends Signals.EventEmitter {
     }
 
     /**
-     * Picks the new limit up and moves the icons that do not fit anymore into
-     * the floating panel. Whether the panel stays open is the user's state, see
-     * _syncIcons().
+     * Picks the icons the user hid up and moves them into the floating panel.
+     * Whether the panel stays open is the user's state, see _syncIcons().
      */
-    _updateMaxVisibleIcons() {
-        this._maxVisibleIcons = this._getSettings().get_int('max-visible-icons');
+    _updateHiddenIcons() {
+        this._hiddenIcons = new Set(this._getSettings().get_strv('hidden-icons'));
+
+        // Nothing left to show, so collapse back.
+        if (!this._hiddenIcons.size)
+            this._iconsExpanded = false;
+
         this.relayout();
+    }
+
+    /**
+     * @param {string} uniqueId the id of an indicator.
+     * @param {boolean} hidden whether it belongs into the floating panel.
+     */
+    _setIconHidden(uniqueId, hidden) {
+        const settings = this._getSettings();
+        const hiddenIcons = new Set(settings.get_strv('hidden-icons'));
+        const changed = hidden
+            ? !hiddenIcons.has(uniqueId) : hiddenIcons.delete(uniqueId);
+
+        if (!changed)
+            return;
+
+        if (hidden)
+            hiddenIcons.add(uniqueId);
+
+        settings.set_strv('hidden-icons', [...hiddenIcons]);
+    }
+
+    /**
+     * Publishes the icons we know about, so that the preferences can offer them
+     * by name instead of asking for their id.
+     */
+    _publishKnownIcons() {
+        const settings = this._getSettings();
+        const knownIcons = [...this._trayIcons].map(icon =>
+            [icon.uniqueId, icon.displayName || icon.uniqueId]);
+
+        const value = new GLib.Variant('a(ss)', knownIcons);
+        if (!settings.get_value('known-icons').equal(value))
+            settings.set_value('known-icons', value);
     }
 
     /**
@@ -864,6 +920,8 @@ export class PanelAreas extends Signals.EventEmitter {
             this._hiddenPanelBox = new St.BoxLayout({
                 orientation: Clutter.Orientation.VERTICAL,
                 style_class: 'appindicator-hidden-panel',
+                // Keeps the panel usable as a drop target while it is empty.
+                style: 'min-width: 44px; min-height: 44px',
                 // The icons carry the spacing on both of their sides, half of
                 // it between two rows gives the grid the same rhythm.
                 spacing: Math.round(getIconSpacing() / 2),
@@ -888,10 +946,15 @@ export class PanelAreas extends Signals.EventEmitter {
      * Shows or hides the floating panel.
      */
     _updatePanel() {
+        // The panel has to be there to be a drop target, empty or not.
+        if (this._drag)
+            this._getHiddenPanelBox();
+
         if (!this._hiddenPanel)
             return;
 
-        const shouldShow = this._iconsExpanded && this._hasIconOverflow();
+        const shouldShow = (this._iconsExpanded && this._hasHiddenIcons()) ||
+            !!this._drag;
 
         this._hiddenPanel.visible = shouldShow;
 
@@ -908,7 +971,7 @@ export class PanelAreas extends Signals.EventEmitter {
     _updatePanelPosition() {
         const panel = this._hiddenPanel;
 
-        if (!panel?.visible)
+        if (this._panelFrozen || !panel?.visible)
             return;
 
         const anchor = this._getHiddenPanelAnchor();
@@ -987,7 +1050,8 @@ export class PanelAreas extends Signals.EventEmitter {
      * moved on the next idle instead of right away.
      */
     _queuePanelReposition() {
-        if (!this._hiddenPanel?.visible || this._repositionId)
+        if (this._panelFrozen || !this._hiddenPanel?.visible ||
+            this._repositionId)
             return;
 
         this._repositionId = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
@@ -1068,11 +1132,7 @@ export class PanelAreas extends Signals.EventEmitter {
     }
 
     _onButtonPress(icon, event) {
-        // Only the icons of the tray area are dragged around: the order they
-        // are put in is what decides which of them end up in the panel, so a
-        // drag that starts in the panel has nothing to reorder.
-        if (event.get_button() !== Clutter.BUTTON_PRIMARY ||
-            icon.container.get_parent() !== this._getBox()) {
+        if (event.get_button() !== Clutter.BUTTON_PRIMARY) {
             this._press = null;
             return Clutter.EVENT_PROPAGATE;
         }
@@ -1145,6 +1205,14 @@ export class PanelAreas extends Signals.EventEmitter {
             offsetY: press.y - containerY,
         };
 
+        // The panel has to be there to be a drop target, empty or not.
+        this._updatePanel();
+
+        // It is put in place once and then stays where it is: moving it along
+        // with its contents would move the drop target out from under the
+        // pointer as soon as an icon lands in it.
+        this._panelFrozen = true;
+
         this._capturedEventId = global.stage.connect('captured-event',
             (_stage, event) => this._onCapturedEvent(event));
     }
@@ -1193,7 +1261,15 @@ export class PanelAreas extends Signals.EventEmitter {
     _updateDropTarget(x, y) {
         const icon = this._drag?.icon;
 
-        if (!icon || !this._isPointInside(Main.panel, x, y))
+        if (!icon)
+            return;
+
+        if (this._isOverHiddenPanel(x, y)) {
+            this._previewIconInPanel(icon);
+            return;
+        }
+
+        if (!this._isPointInside(Main.panel, x, y))
             return;
 
         const box = this._getBox();
@@ -1207,10 +1283,49 @@ export class PanelAreas extends Signals.EventEmitter {
     }
 
     /**
+     * Puts the dragged icon at the end of the grid of the floating panel, so
+     * that the panel shows where the icon is going to land.
+     *
+     * @param {BaseStatusIcon} icon the icon that is being dragged.
+     */
+    _previewIconInPanel(icon) {
+        const hiddenIcons = this._visibleIcons().filter(
+            i => this._hiddenIcons.has(i.uniqueId));
+
+        if (!hiddenIcons.includes(icon))
+            hiddenIcons.push(icon);
+
+        this._layoutPanelIcons(hiddenIcons);
+    }
+
+    /**
+     * @param {number} x the pointer position.
+     * @param {number} y the pointer position.
+     * @returns {boolean} whether the pointer is over the floating panel.
+     */
+    _isOverHiddenPanel(x, y) {
+        if (!this._hiddenPanel?.visible)
+            return false;
+
+        const slack = this._isIconInHiddenPanel(this._drag?.icon) ? PANEL_SLACK : 0;
+
+        return this._isPointInside(this._hiddenPanel, x, y, slack);
+    }
+
+    /**
+     * @param {BaseStatusIcon} icon an icon, if there is one.
+     * @returns {boolean} whether the icon is currently in the floating panel.
+     */
+    _isIconInHiddenPanel(icon) {
+        return !!icon &&
+            this._panelRows.some(row => icon.container.get_parent() === row);
+    }
+
+    /**
      * The icon the dragged one has to be placed after so that it lands under
      * the pointer. Only the icons of `box` that are shown are taken into
      * account, whatever else the box holds (the language area, the fold button,
-     * the icons that are folded away, other panel items, ...) keeps its place.
+     * the icons that show nothing, other panel items, ...) keeps its place.
      *
      * @param {St.BoxLayout} box the box the pointer is in.
      * @param {number} x the pointer position.
@@ -1225,9 +1340,9 @@ export class PanelAreas extends Signals.EventEmitter {
         for (const child of box.get_children()) {
             const icon = this._iconForContainer(child);
 
-            // The icons that are folded away are not on the panel, so they
-            // cannot be aimed at: dropping on them would hide the icon that is
-            // being dragged.
+            // The icons that show nothing are not on the panel, so they cannot
+            // be aimed at: dropping on them would hide the icon that is being
+            // dragged.
             if (child === dragged || !icon || !child.visible)
                 continue;
 
@@ -1267,14 +1382,22 @@ export class PanelAreas extends Signals.EventEmitter {
     }
 
     _finishDrag() {
-        if (!this._drag)
+        const drag = this._drag;
+
+        if (!drag)
             return;
+
+        const {icon} = drag;
+        const inPanel = this._isIconInHiddenPanel(icon);
 
         this._stopDrag();
 
-        // The icons followed the pointer while dragging, the order is only
+        // The areas followed the pointer while dragging, the settings are only
         // written now, so that a cancelled drag simply restores the old state.
+        // The order goes first: writing the hidden state moves the icons around
+        // and the place the icon was dropped at would be lost otherwise.
         this._persistOrder();
+        this._setIconHidden(icon.uniqueId, inPanel);
         this.relayout();
     }
 
@@ -1296,6 +1419,7 @@ export class PanelAreas extends Signals.EventEmitter {
             return;
 
         this._drag = null;
+        this._panelFrozen = false;
 
         if (this._capturedEventId) {
             global.stage.disconnect(this._capturedEventId);
@@ -1307,6 +1431,9 @@ export class PanelAreas extends Signals.EventEmitter {
             drag.icon.container.opacity = 255;
 
         drag.clone.destroy();
+
+        // The panel was only shown to be a drop target.
+        this._updatePanel();
     }
 
     /*

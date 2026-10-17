@@ -75,16 +75,6 @@ class AppIndicatorGeneralPage extends Adw.PreferencesPage {
         this.group.add(languageAreaSwitch);
 
         this._createSpinRow({
-            title: _('Maximum Visible Icons'),
-            subtitle: _('Icons beyond that number are collected in the floating panel below the bar'),
-            settingsKey: this._settingsKey.MAX_VISIBLE_ICONS,
-            from: 1,
-            to: 30,
-            step: 1,
-            round: true,
-        });
-
-        this._createSpinRow({
             title: _('Opacity'),
             settingsKey: this._settingsKey.ICON_OPACITY,
             from: 0,
