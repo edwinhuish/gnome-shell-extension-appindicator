@@ -4,6 +4,7 @@
 #   make install   install into the (local) extension directory
 #   make pack      create a zip file ready for extensions.gnome.org
 #   make check     run the test suite
+#   make schema    compile the GSettings schema into schemas/gschemas.compiled
 #   make clean     remove the compiled artifacts
 #   make distclean remove the build directories and the zip file
 
@@ -16,8 +17,9 @@ ZIP ?= $(UUID).zip
 
 MESON ?= meson
 NINJA ?= ninja
+GLIB_COMPILE_SCHEMAS ?= glib-compile-schemas
 
-.PHONY: all setup build install pack zip check clean distclean help
+.PHONY: all setup build install pack zip check schema clean distclean help
 
 all: build
 
@@ -45,6 +47,11 @@ $(PACK_BUILD_DIR)/build.ninja: meson.build metadata.json
 check: setup
 	$(MESON) test -C $(BUILD_DIR) --print-errorlogs
 
+# Compiles the schema the shell loads when the extension runs from the source
+# tree, so that changes to the XML are picked up without a build or install.
+schema:
+	$(GLIB_COMPILE_SCHEMAS) schemas
+
 clean:
 	@for dir in '$(BUILD_DIR)' '$(PACK_BUILD_DIR)'; do \
 	    if [ -f "$$dir/build.ninja" ]; then $(NINJA) -C "$$dir" clean; fi; \
@@ -55,5 +62,5 @@ distclean:
 	rm -f '$(ZIP)'
 
 help:
-	@echo "Targets: build install pack check clean distclean"
+	@echo "Targets: build install pack check schema clean distclean"
 	@echo "Variables: BUILD_DIR=$(BUILD_DIR) PACK_BUILD_DIR=$(PACK_BUILD_DIR) ZIP=$(ZIP)"
