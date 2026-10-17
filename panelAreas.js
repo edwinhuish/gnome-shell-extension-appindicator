@@ -176,7 +176,9 @@ export class PanelAreas extends Signals.EventEmitter {
         this._dragHandlers = new Map();
 
         // The order the user dragged the icons into, how many of them the tray
-        // area shows at once, and whether the user unfolded the rest.
+        // area shows at once, and whether the user unfolded the rest. The last
+        // one is the user's own state, the fold button is the only thing that
+        // changes it, see _syncIcons().
         this._iconOrder = settings.get_strv('icon-order');
         this._maxVisibleIcons = settings.get_int('max-visible-icons');
         this._iconsExpanded = false;
@@ -340,11 +342,10 @@ export class PanelAreas extends Signals.EventEmitter {
         const visibleIcons = this._visibleIcons(icons);
         const overflow = this._hasIconOverflow(visibleIcons);
 
-        // With every icon fitting into the tray area there is nothing to unfold,
-        // so the next one that shows up starts folded away again.
-        if (!overflow)
-            this._iconsExpanded = false;
-
+        // Whether the icons are unfolded is the user's own state, it survives
+        // the icons that show up or leave: the fold button is the only thing
+        // that changes it. With nothing to fold there is nothing to unfold
+        // either, and the fold button is not shown at all, see _placeFoldButton().
         const visibleCount = overflow && !this._iconsExpanded
             ? this._maxVisibleIcons : visibleIcons.length;
 
@@ -561,14 +562,10 @@ export class PanelAreas extends Signals.EventEmitter {
 
     /**
      * Picks the new limit up and folds the icons that do not fit anymore away.
+     * Whether the icons stay unfolded is the user's state, see _syncIcons().
      */
     _updateMaxVisibleIcons() {
         this._maxVisibleIcons = this._getSettings().get_int('max-visible-icons');
-
-        // Nothing is left to unfold while every icon fits into the tray area.
-        if (!this._hasIconOverflow())
-            this._iconsExpanded = false;
-
         this.relayout();
     }
 
