@@ -3,3 +3,5 @@ _build*
 *.zip
 schemas/gschemas.compiled
 *.mo
+.codebuddy/
+
