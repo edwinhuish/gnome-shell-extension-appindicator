@@ -114,6 +114,13 @@ function setBoxOrientation(box, vertical) {
 }
 
 /**
+ * @param {{red: number, green: number, blue: number}} color a color.
+ * @returns {boolean} whether what is written on it has to be light.
+ */
+const isDarkColor = ({red, green, blue}) =>
+    0.2126 * red + 0.7152 * green + 0.0722 * blue < 128;
+
+/**
  * The space every panel item of ours keeps on both of its sides, in pixels per
  * side, as the "Icon Spacing" setting in the preferences asks for it.
  */
@@ -1272,6 +1279,11 @@ export class PanelAreas extends Signals.EventEmitter {
             style.push(`background-color: rgba(${red}, ${green}, ${blue}, ` +
                 `${alpha.toFixed(3)})`);
             style.push('background-image: none');
+
+            // The icons are symbolic: they are painted with the color of the
+            // popup, which is the opposite of the bar they sit on now. Without
+            // this the icons of a dark bar would be dark on dark.
+            style.push(`color: ${isDarkColor(color) ? '#ffffff' : '#1a1a1a'}`);
         }
 
         // Keeps the panel usable as a drop target while it is empty.
@@ -1294,8 +1306,15 @@ export class PanelAreas extends Signals.EventEmitter {
 
         this._hiddenPanel.visible = shouldShow;
 
-        if (shouldShow)
+        // The panel is in the group the shell lays its own things out in, and
+        // whatever was added there after it — the background of the desktop,
+        // the panel of another extension — paints over it. Being at the end of
+        // the list is what a popup of its own would be.
+        if (shouldShow) {
+            this._hiddenPanel.get_parent()?.set_child_above_sibling(
+                this._hiddenPanel, null);
             this._updatePanelPosition();
+        }
     }
 
     /**
