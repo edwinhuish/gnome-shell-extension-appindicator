@@ -251,6 +251,7 @@ export class PanelAreas extends Signals.EventEmitter {
         this._drag = null;
         this._panelFrozen = false;
         this._capturedEventId = 0;
+        this._droppingIds = false;
 
         Util.connectSmart(settings, 'changed::tray-pos', this, () => this.relayout());
         Util.connectSmart(settings, 'changed::language-area-enabled', this,
@@ -476,7 +477,61 @@ export class PanelAreas extends Signals.EventEmitter {
         this._layoutPanelIcons(hiddenIcons);
         this._updatePanel();
         this._warnAboutUnmatchedIcons(icons);
+        this._dropBusIds(icons);
         this._logState();
+    }
+
+    /**
+     * Drops the ids that were stored under the name an indicator has on the
+     * bus.
+     *
+     * Those ids carry the number of the connection or the process that was
+     * exporting the icon, so they cannot match anything again once that process
+     * is gone (see settingsId() in util.js). They are only left over from
+     * before the settings were given an id that survives a restart, nothing can
+     * be done with them: an icon that is not running keeps its id as long as it
+     * is the stable one, but an id of the bus kind is dead for good.
+     *
+     * Only the ids no icon answers to right now are dropped, so a setting that
+     * is still in use is never touched, and nothing is dropped while there is
+     * no icon at all: that is the moment the shell is still starting and every
+     * setting would look unused.
+     *
+     * @param {BaseStatusIcon[]} icons the icons there are.
+     */
+    _dropBusIds(icons) {
+        if (this._droppingIds || !icons.length)
+            return;
+
+        const inUse = new Set(icons.map(icon => icon.settingsId));
+        const stale = id => !inUse.has(id) && Util.isUnstableSettingsId(id);
+
+        const hidden = [...this._hiddenIcons].filter(stale);
+        const order = this._iconOrder.filter(stale);
+
+        if (!hidden.length && !order.length)
+            return;
+
+        const settings = this._getSettings();
+        this._droppingIds = true;
+
+        try {
+            if (hidden.length) {
+                this._hiddenIcons = new Set(
+                    [...this._hiddenIcons].filter(id => !stale(id)));
+                settings.set_strv('hidden-icons', [...this._hiddenIcons]);
+            }
+
+            if (order.length) {
+                this._iconOrder = this._iconOrder.filter(id => !stale(id));
+                settings.set_strv('icon-order', this._iconOrder);
+            }
+        } finally {
+            this._droppingIds = false;
+        }
+
+        Util.Logger.debug('Dropped the ids that name an indicator on the bus: ' +
+            `${[...hidden, ...order].join(', ')}`);
     }
 
     /**
