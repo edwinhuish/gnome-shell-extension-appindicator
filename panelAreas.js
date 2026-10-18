@@ -967,8 +967,11 @@ export class PanelAreas extends Signals.EventEmitter {
      * grid whose number of columns follows the number of icons.
      *
      * @param {BaseStatusIcon[]} icons the icons, in display order.
+     * @param {BaseStatusIcon|null} [dragged] the icon that is being dragged, if
+     *   the drag wants it laid out with the others instead of keeping it where
+     *   it moves it to, see _previewIconInPanel().
      */
-    _layoutPanelIcons(icons) {
+    _layoutPanelIcons(icons, dragged = null) {
         if (!icons.length) {
             this._clearPanelRows();
             return;
@@ -981,8 +984,9 @@ export class PanelAreas extends Signals.EventEmitter {
         this._growPanelRows(rows);
 
         icons.forEach((icon, index) => {
-            // The icon that is being dragged is placed by the drag itself.
-            if (icon === this._drag?.icon)
+            // The icon that is being dragged is placed by the drag itself,
+            // unless the drag is showing it in the grid.
+            if (icon === this._drag?.icon && icon !== dragged)
                 return;
 
             const row = this._panelRows[Math.floor(index / columns)];
@@ -1739,7 +1743,7 @@ export class PanelAreas extends Signals.EventEmitter {
             return;
 
         if (this._isOverHiddenPanel(x, y)) {
-            this._previewIconInPanel(icon);
+            this._previewIconInPanel(icon, x, y);
             return;
         }
 
@@ -1757,24 +1761,87 @@ export class PanelAreas extends Signals.EventEmitter {
         if (!this._isInTraySegment(segment, x, y))
             return;
 
+        // The icon comes back out of the panel: the icons that stay behind
+        // close the gap it leaves there.
+        const wasInPanel = this._isIconInHiddenPanel(icon);
         const anchor = this._findDropAnchor(segment, x, y, icon.container);
+
         this._moveActorAfter(icon.container, box, anchor);
+
+        if (wasInPanel)
+            this._layoutPanelIcons(this._hiddenIconsForPanel(icon));
     }
 
     /**
-     * Puts the dragged icon at the end of the grid of the floating panel, so
-     * that the panel shows where the icon is going to land.
+     * @param {BaseStatusIcon} icon an icon.
+     * @returns {BaseStatusIcon[]} the icons the floating panel holds, in display
+     *   order, without the one that is given.
+     */
+    _hiddenIconsForPanel(icon) {
+        return this._visibleIcons().filter(other =>
+            other !== icon && this._hiddenIcons.has(other.settingsId));
+    }
+
+    /**
+     * Puts the dragged icon into the grid of the floating panel, at the place
+     * the pointer is over, so that the panel shows where the icon will land.
+     *
+     * The icon itself is moved there and not just drawn there: what the drag
+     * asks on release is whether the icon is in the panel or not, and that is
+     * where the icon is, see _finishDrag().
      *
      * @param {BaseStatusIcon} icon the icon that is being dragged.
+     * @param {number} x the pointer position.
+     * @param {number} y the pointer position.
      */
-    _previewIconInPanel(icon) {
-        const hiddenIcons = this._visibleIcons().filter(
-            i => this._hiddenIcons.has(i.settingsId));
+    _previewIconInPanel(icon, x, y) {
+        const others = this._hiddenIconsForPanel(icon);
+        const index = this._panelDropIndex(icon, x, y);
+        const icons = [...others];
 
-        if (!hiddenIcons.includes(icon))
-            hiddenIcons.push(icon);
+        icons.splice(Math.min(index, icons.length), 0, icon);
+        this._layoutPanelIcons(icons, icon);
+    }
 
-        this._layoutPanelIcons(hiddenIcons);
+    /**
+     * Where in the grid of the floating panel the pointer is.
+     *
+     * @param {BaseStatusIcon} icon the icon that is being dragged.
+     * @param {number} x the pointer position.
+     * @param {number} y the pointer position.
+     * @returns {number} the index the icon would be inserted at, counted among
+     *   the icons the panel holds without it.
+     */
+    _panelDropIndex(icon, x, y) {
+        let index = 0;
+        let nearest = Infinity;
+        let position = 0;
+
+        for (const row of this._panelRows) {
+            for (const child of row.get_children()) {
+                const other = this._iconForContainer(child);
+
+                if (!other || other === icon || !other.visible)
+                    continue;
+
+                const geometry = this._getGeometry(child);
+                const centerX = geometry.x + geometry.width / 2;
+                const centerY = geometry.y + geometry.height / 2;
+                const distance = (x - centerX) ** 2 + (y - centerY) ** 2;
+
+                // The icon goes before the cell the pointer is left of and
+                // after the one it is right of, so that it lands where the
+                // pointer is rather than always at the end of the grid.
+                if (distance < nearest) {
+                    nearest = distance;
+                    index = position + (x < centerX ? 0 : 1);
+                }
+
+                position += 1;
+            }
+        }
+
+        return index;
     }
 
     /**
