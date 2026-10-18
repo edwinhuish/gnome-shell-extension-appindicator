@@ -234,7 +234,10 @@ export class PanelAreas extends Signals.EventEmitter {
         // they dragged the icons into, and whether the panel is open. The last
         // one is the user's own state, the fold button is the only thing that
         // changes it, see _syncIcons().
+        // The ids the user hid, and the ones of those that no icon answered to,
+        // which are only worth naming once, see _warnAboutUnmatchedIcons().
         this._hiddenIcons = new Set(settings.get_strv('hidden-icons'));
+        this._warnedHiddenIds = new Set();
         this._iconOrder = settings.get_strv('icon-order');
         this._iconsExpanded = false;
 
@@ -415,8 +418,13 @@ export class PanelAreas extends Signals.EventEmitter {
      * not show.
      */
     toggleHiddenIcons() {
-        if (!this._hasHiddenIcons())
+        if (!this._hasHiddenIcons()) {
+            // The button is not shown without hidden icons, so this is what a
+            // press on a button that is still on screen looks like when the
+            // setting and the icons disagree.
+            Util.Logger.debug('The fold button was pressed with nothing to fold');
             return;
+        }
 
         this._iconsExpanded = !this._iconsExpanded;
         this._syncIcons();
@@ -467,6 +475,57 @@ export class PanelAreas extends Signals.EventEmitter {
 
         this._layoutPanelIcons(hiddenIcons);
         this._updatePanel();
+        this._warnAboutUnmatchedIcons(icons);
+        this._logState();
+    }
+
+    /**
+     * Names the ids the user hid that no icon answers to.
+     *
+     * That is what a hidden icon looks like when the id the preferences wrote
+     * is not the id the icon reports: the icon stays in the tray area and the
+     * floating panel stays empty, which is hard to tell apart from the feature
+     * not working at all. The ids are named once each, icons come and go all
+     * the time and the setting keeps the ids of the icons that are gone.
+     *
+     * @param {BaseStatusIcon[]} icons the icons there are.
+     */
+    _warnAboutUnmatchedIcons(icons) {
+        const known = new Set(icons.map(icon => icon.uniqueId));
+        const unmatched = [...this._hiddenIcons].filter(id => !known.has(id));
+
+        if (!unmatched.length) {
+            this._warnedHiddenIds.clear();
+            return;
+        }
+
+        const fresh = unmatched.filter(id => !this._warnedHiddenIds.has(id));
+        if (!fresh.length)
+            return;
+
+        for (const id of fresh)
+            this._warnedHiddenIds.add(id);
+
+        Util.Logger.warn('No tray icon answers to the hidden ids ' +
+            `${fresh.join(', ')}, there are: ${[...known].join(', ') || 'none'}`);
+    }
+
+    /**
+     * Writes one line about what the areas hold.
+     *
+     * Everything the hidden icons feature depends on is in it: how many icons
+     * there are, how many the user hid, whether the fold button and the
+     * floating panel are on screen. A screenshot cannot tell a panel that is
+     * empty from one that was never created, this can.
+     *
+     * @param {string} [reason] what made the areas be laid out.
+     */
+    _logState(reason = 'sync') {
+        Util.Logger.debug(`Panel areas (${reason}, box=${this.boxName}): ` +
+            `tray=${this._trayIcons.size}, hidden=${this._hiddenIcons.size}, ` +
+            `fold=${this._foldButton?.container.visible ?? false}, ` +
+            `expanded=${this._iconsExpanded}, ` +
+            `panel=${this._hiddenPanel?.visible ?? false}`);
     }
 
     /**
@@ -1403,6 +1462,7 @@ export class PanelAreas extends Signals.EventEmitter {
 
         // The panel has to be there to be a drop target, empty or not.
         this._updatePanel();
+        this._logState('drag started');
 
         // It is put in place once and then stays where it is: moving it along
         // with its contents would move the drop target out from under the
@@ -1703,6 +1763,7 @@ export class PanelAreas extends Signals.EventEmitter {
 
         // The panel was only shown to be a drop target.
         this._updatePanel();
+        this._logState('drag stopped');
     }
 
     /*

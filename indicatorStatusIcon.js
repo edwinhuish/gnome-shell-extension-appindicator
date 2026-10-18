@@ -57,6 +57,12 @@ export function addIconToPanel(statusIcon) {
     }
 
     // Should not happen, PanelAreas is initialized before any icon shows up.
+    // When it does happen the icon is left in the panel for good: it is not
+    // tracked, so it is never laid out, never made draggable and never hidden,
+    // which looks like the whole tray behaving as it did before the extension
+    // was installed. Worth a line in the log rather than a silent fallback.
+    Util.Logger.warn('PanelAreas is missing, the tray icon is not managed');
+
     const settings = SettingsManager.getDefaultGSettings();
     Main.panel.addToStatusArea(`appindicator-${statusIcon.uniqueId}`, statusIcon, 1,
         settings.get_string('tray-pos'));
