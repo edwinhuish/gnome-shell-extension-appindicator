@@ -154,16 +154,23 @@ cmd_status() {
 }
 
 # ---------------------------------------------------------------- diag
-cmd_diag() {
-    local out_dir="$LOG_DIR"
-    if ! mkdir -p "$out_dir" 2>/dev/null || [ ! -w "$out_dir" ]; then
-        out_dir="${XDG_STATE_HOME:-$HOME/.local/state}/appindicator-logs"
-        mkdir -p "$out_dir"
-        warn "共享目录不可写，日志落在 $out_dir"
+# 诊断落盘的位置。共享目录（vboxsf / 9p 挂载的仓库）在虚拟机里宿主能直接读，
+# 这正是「拿不到 guest 控制权也能取现场」的那条通道，所以优先用它。
+# 只有它不可写时才退回本机状态目录。告警走 stderr，避免被 $(...) 当成路径。
+log_path() {
+    local dir="$LOG_DIR"
+
+    if ! mkdir -p "$dir" 2>/dev/null || [ ! -w "$dir" ]; then
+        dir="${XDG_STATE_HOME:-$HOME/.local/state}/appindicator-logs"
+        mkdir -p "$dir"
+        warn "共享目录不可写，日志落在 $dir" >&2
     fi
 
-    local out="$out_dir/diag-$(date +%Y%m%d-%H%M%S).txt"
-    exec > >(tee "$out") 2>&1
+    printf '%s/diag-%s.txt' "$dir" "$(date +%Y%m%d-%H%M%S)"
+}
+
+cmd_diag() {
+    local out="${LOG_OUT:-$(log_path)}"
 
     say "环境"
     printf '   时间        %s\n' "$(date -Iseconds)"
@@ -242,7 +249,16 @@ case "${1:-help}" in
 install) cmd_install ;;
 reload) cmd_reload ;;
 status) cmd_status ;;
-diag) cmd_diag ;;
+diag)
+    # 输出整段交给 tee 同步写盘。原来在 cmd_diag 里 exec > >(tee) 是进程替换，
+    # bash 不会等那个 tee 收尾，脚本一快就丢内容——实测日志文件全是 0 字节。
+    if [ -z "${DEV_DIAG_TEE:-}" ]; then
+        diag_out=$(log_path)
+        DEV_DIAG_TEE=1 LOG_OUT="$diag_out" "$0" diag 2>&1 | tee "$diag_out"
+        exit "${PIPESTATUS[0]}"
+    fi
+    cmd_diag
+    ;;
 log) cmd_log ;;
 *)
     sed -n '3,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
