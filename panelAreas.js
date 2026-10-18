@@ -1272,6 +1272,11 @@ export class PanelAreas extends Signals.EventEmitter {
         const color = PanelBackground.PanelBackground.getDefault()?.color;
         const style = [PANEL_MIN_SIZE];
 
+        // The panel is a popup, so the theme draws a border around it. It is
+        // put next to the bar and follows its background, and the bar has no
+        // border: the line only outlined the panel against the desktop.
+        style.push('border-width: 0');
+
         // A bar that is not painted at all has no color to take over: the
         // panel keeps the look the theme gives a popup then, which is what it
         // had before a bar background was there to follow.
