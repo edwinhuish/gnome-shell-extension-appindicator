@@ -7,7 +7,37 @@
     <key name="language-area-enabled" type="b">
       <default>true</default>
       <summary>Show Language Area</summary>
-      <description>Keep the language (input source) indicator in its own area, always at the left of the tray icons</description>
+      <description>Keep the input method indicator in its own area, next to the tray icons on the side that looks towards the rest of the panel</description>
+    </key>
+    <key name="language-area-role" type="s">
+      <default>"auto"</default>
+      <summary>Input method indicator</summary>
+      <description>Which panel indicator plays the language area: auto takes the panel item of the input method (kimpanel) when it is there and falls back to the keyboard indicator of the shell, keyboard and kimpanel pick one of the two</description>
+      <choices>
+        <choice value="auto"/>
+        <choice value="kimpanel"/>
+        <choice value="keyboard"/>
+      </choices>
+    </key>
+    <key name="panel-background-mode" type="s">
+      <default>"auto"</default>
+      <summary>Tray background</summary>
+      <description>auto follows the color and the transparency of the panel bar, custom paints the tray area and the hidden icons panel with the color and the transparency set here</description>
+      <choices>
+        <choice value="auto"/>
+        <choice value="custom"/>
+      </choices>
+    </key>
+    <key name="panel-background-color" type="s">
+      <default>"#242424"</default>
+      <summary>Tray background color</summary>
+      <description>Color the tray area and the hidden icons panel are painted with, also used when the panel bar does not report a color of its own</description>
+    </key>
+    <key name="panel-background-opacity" type="i">
+      <default>90</default>
+      <summary>Tray background opacity</summary>
+      <description>Transparency of the tray background in percent, 100 being opaque</description>
+      <range min="0" max="100"/>
     </key>
     <key name="icon-saturation" type="d">
       <default>0.0</default>

@@ -19,6 +19,7 @@ import * as Extension from 'resource:///org/gnome/shell/extensions/extension.js'
 import * as StatusNotifierWatcher from './statusNotifierWatcher.js';
 import * as Interfaces from './interfaces.js';
 import * as PanelAreas from './panelAreas.js';
+import * as PanelBackground from './panelBackground.js';
 import * as TrayIconsManager from './trayIconsManager.js';
 import * as Util from './util.js';
 import {Logger} from './logger.js';
@@ -58,6 +59,9 @@ export default class AppIndicatorExtension extends Extension.Extension {
         this._isEnabled = true;
         SettingsManager.initialize(this);
         Util.tryCleanupOldIndicators();
+        // The background of the bar is what the tray and the floating panel
+        // are painted with, so it is read before either of them is built.
+        PanelBackground.PanelBackground.initialize();
         PanelAreas.PanelAreas.initialize();
         this._maybeEnableAfterNameAvailable();
         TrayIconsManager.TrayIconsManager.initialize();
@@ -67,6 +71,7 @@ export default class AppIndicatorExtension extends Extension.Extension {
         this._isEnabled = false;
         TrayIconsManager.TrayIconsManager.destroy();
         PanelAreas.PanelAreas.destroy();
+        PanelBackground.PanelBackground.destroy();
 
         if (this._statusNotifierWatcher !== null) {
             this._statusNotifierWatcher.destroy();

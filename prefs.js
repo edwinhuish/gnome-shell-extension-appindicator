@@ -16,6 +16,7 @@ import {
 const SettingsKey = {
     LEGACY_TRAY_ENABLED: 'legacy-tray-enabled',
     LANGUAGE_AREA_ENABLED: 'language-area-enabled',
+    LANGUAGE_AREA_ROLE: 'language-area-role',
     TRAY_ICON_SPACING: 'tray-icon-spacing',
     ICON_SIZE: 'icon-size',
     ICON_OPACITY: 'icon-opacity',
@@ -23,6 +24,9 @@ const SettingsKey = {
     ICON_BRIGHTNESS: 'icon-brightness',
     ICON_CONTRAST: 'icon-contrast',
     TRAY_POS: 'tray-pos',
+    PANEL_BACKGROUND_MODE: 'panel-background-mode',
+    PANEL_BACKGROUND_COLOR: 'panel-background-color',
+    PANEL_BACKGROUND_OPACITY: 'panel-background-opacity',
     HIDDEN_ICONS: 'hidden-icons',
     KNOWN_ICONS: 'known-icons',
     CUSTOM_ICONS: 'custom-icons',

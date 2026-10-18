@@ -1,6 +1,7 @@
 /* exported  GeneralPage*/
 
 import Adw from 'gi://Adw';
+import Gdk from 'gi://Gdk';
 import Gtk from 'gi://Gtk';
 import GObject from 'gi://GObject';
 import {gettext as _} from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
@@ -61,7 +62,8 @@ class AppIndicatorGeneralPage extends Adw.PreferencesPage {
 
         const languageAreaSwitch = new Adw.SwitchRow({
             title: _('Show Language Area'),
-            subtitle: _('Keeps the language (input source) area at the left of the tray icons'),
+            subtitle: _('Keeps the input method indicator next to the tray icons, ' +
+                'on the side that looks towards the rest of the panel'),
             active: this._settings.get_boolean(this._settingsKey.LANGUAGE_AREA_ENABLED),
         });
 
@@ -73,6 +75,8 @@ class AppIndicatorGeneralPage extends Adw.PreferencesPage {
         );
 
         this.group.add(languageAreaSwitch);
+
+        this._createLanguageAreaRoleRow();
 
         this._createSpinRow({
             title: _('Opacity'),
@@ -126,7 +130,9 @@ class AppIndicatorGeneralPage extends Adw.PreferencesPage {
         comboItems.forEach(item => alignmentList.append(item.label));
 
         const combo = new Adw.ComboRow({
-            title: _('Tray Horizontal Alignment'),
+            title: _('Tray Position'),
+            subtitle: _('Where the tray area is in the panel, the input method icon ' +
+                'is kept on the side of it that looks towards the rest of the panel'),
             model: alignmentList,
         });
         const trayPos = this._settings.get_string(this._settingsKey.TRAY_POS);
@@ -137,6 +143,181 @@ class AppIndicatorGeneralPage extends Adw.PreferencesPage {
 
         this.group.add(combo);
         this.add(this.group);
+        this.add(this._createBackgroundGroup());
+    }
+
+    /**
+     * Builds the background of the tray area: the color of the panel bar, or a
+     * color of its own.
+     *
+     * The color and the transparency stay editable in both modes, because they
+     * are also what the tray is painted with when the bar has no background to
+     * report: a theme that paints the bar with an image, a panel extension that
+     * draws its own background and a bar that is faded out completely all leave
+     * nothing to follow.
+     */
+    _createBackgroundGroup() {
+        const modeKey = this._settingsKey.PANEL_BACKGROUND_MODE;
+        const colorKey = this._settingsKey.PANEL_BACKGROUND_COLOR;
+        const opacityKey = this._settingsKey.PANEL_BACKGROUND_OPACITY;
+
+        const group = new Adw.PreferencesGroup({
+            title: _('Tray Background'),
+        });
+
+        const modes = [
+            {mode: 'auto', label: _('Follow the Panel')},
+            {mode: 'custom', label: _('Custom Color')},
+        ];
+
+        const modeList = new Gtk.StringList();
+        for (const {label} of modes)
+            modeList.append(label);
+
+        const modeRow = new Adw.ComboRow({
+            title: _('Background'),
+            subtitle: _('The color and the transparency below are used when the panel ' +
+                'bar reports no background of its own'),
+            model: modeList,
+        });
+
+        const selectedMode = modes.findIndex(
+            ({mode}) => mode === this._settings.get_string(modeKey));
+        modeRow.set_selected(selectedMode < 0 ? 0 : selectedMode);
+
+        modeRow.connect('notify::selected', widget => {
+            const {mode} = modes[widget.get_selected()];
+            this._settings.set_string(modeKey, mode);
+        });
+
+        group.add(modeRow);
+
+        const colorButton = new Gtk.ColorDialogButton({
+            dialog: new Gtk.ColorDialog({
+                with_alpha: false,
+                title: _('Tray Background Color'),
+            }),
+            valign: Gtk.Align.CENTER,
+        });
+
+        colorButton.set_rgba(
+            this._rgbaFromSetting(this._settings.get_string(colorKey)));
+
+        colorButton.connect('notify::rgba', widget => this._settings.set_string(
+            colorKey, this._hexFromRgba(widget.get_rgba())));
+
+        const colorRow = new Adw.ActionRow({
+            title: _('Color'),
+            subtitle: _('Color of the tray area and of the hidden icons panel, also used ' +
+                'when the bar cannot be followed'),
+            activatable_widget: colorButton,
+        });
+        colorRow.add_suffix(colorButton);
+
+        group.add(colorRow);
+
+        const opacityScale = this._createScale({
+            from: 20,
+            to: 100,
+            step: 1,
+            value: this._settings.get_int(opacityKey),
+        });
+
+        opacityScale.connect('value-changed', () =>
+            this._settings.set_int(opacityKey,
+                Math.round(opacityScale.get_value())));
+
+        const opacitySuffix = new Gtk.Box({
+            orientation: Gtk.Orientation.HORIZONTAL,
+            spacing: 6,
+            valign: Gtk.Align.CENTER,
+        });
+        opacitySuffix.append(opacityScale);
+        opacitySuffix.append(new Gtk.Label({label: '%'}));
+
+        const opacityRow = new Adw.ActionRow({
+            title: _('Opacity'),
+            subtitle: _('Transparency of the tray background, 100 being opaque'),
+        });
+        opacityRow.add_suffix(opacitySuffix);
+
+        group.add(opacityRow);
+
+        return group;
+    }
+
+    /**
+     * @param {string} color a color as the settings store it.
+     * @returns {Gdk.RGBA} the same color, the default one when unreadable.
+     */
+    _rgbaFromSetting(color) {
+        const rgba = new Gdk.RGBA();
+
+        if (!rgba.parse(`${color ?? ''}`))
+            rgba.parse('#242424');
+
+        return rgba;
+    }
+
+    /**
+     * @param {Gdk.RGBA} rgba a color.
+     * @returns {string} the color as the settings store it.
+     */
+    _hexFromRgba(rgba) {
+        const channel = value => Math.round(Math.min(Math.max(value, 0), 1) * 255)
+            .toString(16).padStart(2, '0');
+
+        return `#${channel(rgba.red)}${channel(rgba.green)}${channel(rgba.blue)}`;
+    }
+
+    /**
+     * Picks the panel item that plays the language area.
+     *
+     * "Automatic" takes the panel item of the input method (fcitx5, ibus, ...
+     * through kimpanel) when the session has one, since that is the icon the
+     * input method itself shows, and falls back to the keyboard indicator of
+     * the shell.
+     */
+    _createLanguageAreaRoleRow() {
+        const roles = [
+            {role: 'auto', label: _('Automatic')},
+            {role: 'kimpanel', label: _('Input Method Panel')},
+            {role: 'keyboard', label: _('Keyboard Indicator')},
+        ];
+
+        const model = new Gtk.StringList();
+        for (const {label} of roles)
+            model.append(label);
+
+        const row = new Adw.ComboRow({
+            title: _('Input Method Icon'),
+            subtitle: _('Which panel item is kept next to the tray icons'),
+            model,
+        });
+
+        const current = this._settings.get_string(
+            this._settingsKey.LANGUAGE_AREA_ROLE);
+        const selected = roles.findIndex(({role}) => role === current);
+        row.set_selected(selected < 0 ? 0 : selected);
+
+        row.connect('notify::selected', widget => {
+            const index = widget.get_selected();
+            const role = roles[index]?.role;
+
+            if (role)
+                this._settings.set_string(this._settingsKey.LANGUAGE_AREA_ROLE, role);
+        });
+
+        const syncSensitivity = () => {
+            row.sensitive = this._settings.get_boolean(
+                this._settingsKey.LANGUAGE_AREA_ENABLED);
+        };
+
+        syncSensitivity();
+        this._settings.connect(
+            `changed::${this._settingsKey.LANGUAGE_AREA_ENABLED}`, syncSensitivity);
+
+        this.group.add(row);
     }
 
     /**

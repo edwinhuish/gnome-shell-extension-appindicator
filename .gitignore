@@ -4,4 +4,5 @@ _build*
 schemas/gschemas.compiled
 *.mo
 .codebuddy/
+.workbuddy/
 

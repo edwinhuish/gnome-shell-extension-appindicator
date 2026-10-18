@@ -24,6 +24,7 @@ import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as Signals from 'resource:///org/gnome/shell/misc/signals.js';
 import {InputSourceIndicator} from 'resource:///org/gnome/shell/ui/status/keyboard.js';
 
+import * as PanelBackground from './panelBackground.js';
 import * as SettingsManager from './settingsManager.js';
 import * as Util from './util.js';
 
@@ -31,6 +32,8 @@ export const LANGUAGE_AREA_ROLE = 'appindicator-language-area';
 export const FOLD_BUTTON_ROLE = 'appindicator-fold-button';
 
 const SHELL_LANGUAGE_AREA_ROLE = 'keyboard';
+/** The panel item of the input method panel extension (fcitx5, ibus, ...). */
+const IME_PANEL_ROLE = 'kimpanel';
 const PANEL_BOX_NAMES = ['left', 'center', 'right'];
 
 /** Pixels the pointer has to move before a press turns into a drag. */
@@ -38,6 +41,18 @@ const DRAG_THRESHOLD = 8;
 
 /** Gap the floating panel keeps to the panel bar it is put next to. */
 const PANEL_GAP = 6;
+
+/**
+ * The floating panel is painted with the background of the bar, but never more
+ * transparent than this: it is a popup that holds icons and menu labels, and
+ * it has to stay readable when the background it follows is (nearly) gone. The
+ * transparency the user picked is what the panel is painted with, this is only
+ * the floor below which a followed bar is not taken as it is.
+ */
+const MIN_PANEL_ALPHA = 0.2;
+
+/** The smallest size the floating panel keeps, so it stays a drop target. */
+const PANEL_MIN_SIZE = 'min-width: 44px; min-height: 44px';
 
 /**
  * Extra room around the floating panel. Once an icon is inside the panel the
@@ -145,22 +160,30 @@ class AppIndicatorTrayFoldButton extends PanelMenu.Button {
  *
  *     [ language area ][ fold button ][ tray area ]
  *
- * The language area holds the language (input source) indicator and is always
- * kept as the leftmost item of the panel box we manage, so that it can never be
- * pushed around by the tray icons (or by anything else) that show up later.
+ * The block sits at the start of the panel box we manage, so that it can never
+ * be pushed around by the tray icons (or by anything else) that show up later.
  *
- * The tray area is the place where the tray icons are added, right after the
- * language area (see addIconToPanel() in indicatorStatusIcon.js). Icons the
- * user asked to hide are kept in a floating panel next to the bar, which the
- * fold button shows and hides. Icons that show nothing at all are not counted,
- * see _visibleIcons().
+ * The language area holds the input method indicator and is put on the side of
+ * the tray area that looks towards the rest of the panel, the way the Windows
+ * notification area keeps the input method indicator on its inner side: left
+ * of the tray icons in the right and in the center box, right of them in the
+ * left box (see _imeBeforeTray). The side is the same one in a vertical panel,
+ * where the boxes stack along the height of the bar.
+ *
+ * The tray area is the place where the tray icons are added (see
+ * addIconToPanel() in indicatorStatusIcon.js). Icons the user asked to hide
+ * are kept in a floating panel next to the bar, which the fold button shows and
+ * hides. Icons that show nothing at all are not counted, see _visibleIcons().
  *
  * The floating panel lays its icons out in a grid. Its width follows the number
  * of icons it holds: two icons per row below four icons, three below nine, and
  * so on up to eight per row, so that it stays roughly square and never turns
- * into a single row wider than the screen. The floating panel is put on the
- * free side of the bar, i.e. below a bar that sits at the top of the screen and
- * above a bar that sits at the bottom, so that the two never overlap.
+ * into a single row wider than the screen. It is put on the free side of the
+ * bar, i.e. below a bar that sits at the top of the screen, above a bar that
+ * sits at the bottom, right of a bar at the left edge and left of a bar at the
+ * right edge, so that the two never overlap. It is painted with the background
+ * of the bar, transparency included, the way the flyout of the Windows
+ * notification area looks like the taskbar it belongs to.
  *
  * The icons can be rearranged by dragging them around, in the tray area and in
  * the floating panel alike, and an icon can be dragged from one area into the
@@ -190,6 +213,8 @@ export class PanelAreas extends Signals.EventEmitter {
         const settings = this._getSettings();
 
         this._adoptedLanguageIndicator = null;
+        this._adoptedLanguageHome = null;
+        this._adoptedLanguageStyle = null;
         this._ownLanguageIndicator = null;
         this._foldButton = null;
 
@@ -230,7 +255,15 @@ export class PanelAreas extends Signals.EventEmitter {
         });
         Util.connectSmart(settings, 'changed::tray-icon-spacing', this,
             () => this._updateIconSpacing());
+        Util.connectSmart(settings, 'changed::language-area-role', this,
+            () => this.relayout());
         Util.connectSmart(Main.sessionMode, 'updated', this, () => this.relayout());
+
+        // The floating panel is painted with the background of the bar, which
+        // is followed as it changes, transparency included.
+        this._background = PanelBackground.PanelBackground.initialize();
+        Util.connectSmart(this._background, 'changed', this,
+            () => this._applyPanelBackground());
 
         // The floating panel follows the bar it is put next to, so it has to be
         // repositioned when the bar moves to the other side of the screen or
@@ -265,17 +298,32 @@ export class PanelAreas extends Signals.EventEmitter {
     }
 
     /**
-     * Index of the first tray icon: the tray area always starts right after the
-     * fold button, which itself sits right after the language area.
+     * Whether the input method indicator goes in front of the tray icons.
+     *
+     * The tray area is the outer end of the panel, so the input method
+     * indicator belongs on its inner side, where the Windows notification area
+     * keeps it as well: left of the tray icons in the right and in the center
+     * box, right of them in the left box. A vertical panel stacks the same
+     * order along its height, where the inner side of the left box is the
+     * lower one and the inner side of the right box the upper one, which is
+     * what this order gives for free.
+     *
+     * @returns {boolean} whether the language area comes first.
+     */
+    get _imeBeforeTray() {
+        return this.boxName !== 'left';
+    }
+
+    /**
+     * The index a newly added tray icon starts at.
+     *
+     * The shell puts the icon into the box for us; where it belongs in the end
+     * is decided by _syncIcons(), which knows the side of the tray area.
+     *
+     * @returns {number} the index to append the icon at.
      */
     getTrayIconIndex() {
-        const foldButton = this._placeFoldButton();
-        const box = this._getBox();
-
-        if (foldButton.container.get_parent() !== box)
-            return 0;
-
-        return box.get_children().indexOf(foldButton.container) + 1;
+        return this._getBox().get_n_children();
     }
 
     /**
@@ -380,9 +428,6 @@ export class PanelAreas extends Signals.EventEmitter {
      * Places the language area, the fold button and every icon we know about.
      */
     _syncIcons() {
-        this._placeLanguageArea();
-        this._placeFoldButton();
-
         const icons = this._sortedIcons();
         const visibleIcons = this._visibleIcons(icons);
 
@@ -398,17 +443,26 @@ export class PanelAreas extends Signals.EventEmitter {
         // the panel only counts the icons it actually shows.
         const inactiveIcons = icons.filter(icon => !icon.visible);
 
-        // The tray area starts right after the fold button, so that the
-        // language area can never be pushed away by the tray icons.
-        this._layoutBox(this._getBox(), this._getTrayStartIndex(),
-            [...trayIcons, ...inactiveIcons]);
+        const foldButton = this._placeFoldButton();
+        const languageArea = this._placeLanguageArea();
+
+        const trayActors = [...trayIcons, ...inactiveIcons].map(i => i.container);
+        const foldActor = foldButton.container;
+        const languageActor = languageArea?.container ?? null;
+
+        // One block, in the order the side of the tray area asks for: the
+        // language area is never pushed away by the tray icons, and the tray
+        // icons stay on the side of the block that looks away from the panel.
+        this._layoutGroup(this._getBox(), this._imeBeforeTray
+            ? [languageActor, foldActor, ...trayActors]
+            : [...trayActors, foldActor, languageActor]);
 
         this._layoutPanelIcons(hiddenIcons);
         this._updatePanel();
     }
 
     /**
-     * Keeps the language area at the leftmost index of the managed panel box.
+     * Puts the language area in place, adopting the indicator that plays it.
      *
      * @returns {PanelMenu.Button|null} the language area, if there is one.
      */
@@ -418,13 +472,136 @@ export class PanelAreas extends Signals.EventEmitter {
             return null;
         }
 
-        const indicator = this._getLanguageIndicator();
+        // The input method panel of the session is the icon the input method
+        // itself shows, the keyboard indicator of the shell is the fallback.
+        const indicator = this._findIndicator(this._languageAreaRoles());
+
         if (indicator) {
+            if (this._adoptedLanguageIndicator !== indicator) {
+                this._releaseAdoptedLanguageArea();
+                this._adoptLanguageArea(indicator);
+            }
+
             this._applyIconSpacing(indicator);
-            this._moveToBox(indicator.container, this._getBox(), 0);
+            return indicator;
         }
 
-        return indicator;
+        // Nothing to adopt: the shell has no input source indicator in this
+        // session mode, so the language area is provided by us.
+        this._releaseAdoptedLanguageArea();
+
+        const ownIndicator = this._getOwnLanguageIndicator();
+
+        if (ownIndicator)
+            this._applyIconSpacing(ownIndicator);
+
+        return ownIndicator;
+    }
+
+    /**
+     * The panel roles that can play the language area, best first.
+     *
+     * An input method panel (kimpanel) shows the icon of the input method
+     * itself, which is what the user means by "the input method icon" once
+     * fcitx5 or ibus is running, so it is preferred over the keyboard
+     * indicator of the shell. The preferences can pin one of them.
+     *
+     * @returns {string[]} the roles to look for, in the order to try them.
+     */
+    _languageAreaRoles() {
+        const role = this._getSettings().get_string('language-area-role');
+
+        if (role === IME_PANEL_ROLE || role === SHELL_LANGUAGE_AREA_ROLE)
+            return [role];
+
+        return [IME_PANEL_ROLE, SHELL_LANGUAGE_AREA_ROLE];
+    }
+
+    /**
+     * @param {string[]} roles the panel roles to look for.
+     * @returns {PanelMenu.Button|null} the first indicator of those roles that
+     *   shows something, or the first one that is there at all.
+     */
+    _findIndicator(roles) {
+        let hidden = null;
+
+        for (const role of roles) {
+            const indicator = Main.panel.statusArea[role];
+
+            if (!indicator?.container)
+                continue;
+
+            if (indicator.container.visible)
+                return indicator;
+
+            hidden ??= indicator;
+        }
+
+        return hidden;
+    }
+
+    /**
+     * Takes over an indicator that the shell or another extension put in the
+     * panel, remembering where it was so that it can be handed back there.
+     *
+     * @param {PanelMenu.Button} indicator the indicator to adopt.
+     */
+    _adoptLanguageArea(indicator) {
+        const {container} = indicator;
+        const parent = container.get_parent();
+
+        this._adoptedLanguageIndicator = indicator;
+        this._adoptedLanguageHome = parent
+            ? {parent, index: parent.get_children().indexOf(container)}
+            : null;
+        this._adoptedLanguageStyle = indicator.get_style();
+    }
+
+    /**
+     * Hands the adopted indicator back to where it came from.
+     */
+    _releaseAdoptedLanguageArea() {
+        const adopted = this._adoptedLanguageIndicator;
+
+        if (!adopted)
+            return;
+
+        const home = this._adoptedLanguageHome;
+
+        try {
+            adopted.set_style(this._adoptedLanguageStyle ?? '');
+
+            if (home?.parent)
+                this._moveToBox(adopted.container, home.parent, home.index);
+        } catch {
+            // The indicator is gone with the panel item it lived in.
+        }
+
+        this._adoptedLanguageIndicator = null;
+        this._adoptedLanguageHome = null;
+        this._adoptedLanguageStyle = null;
+    }
+
+    /**
+     * Creates the language area for the session modes that do not have an
+     * input source indicator of their own.
+     *
+     * @returns {PanelMenu.Button|null} our own language area.
+     */
+    _getOwnLanguageIndicator() {
+        if (this._ownLanguageIndicator)
+            return this._ownLanguageIndicator;
+
+        try {
+            this._ownLanguageIndicator = new InputSourceIndicator();
+            Main.panel.addToStatusArea(LANGUAGE_AREA_ROLE, this._ownLanguageIndicator,
+                0, this.boxName);
+        } catch (e) {
+            this._ownLanguageIndicator = null;
+            Util.Logger.warn(`Failed to create the language area: ${e}`);
+        }
+
+        return this._ownLanguageIndicator;
     }
 
     /**
@@ -450,28 +627,19 @@ export class PanelAreas extends Signals.EventEmitter {
     }
 
     /**
-     * Keeps the fold button right after the language area, i.e. at the left of
-     * the tray area.
+     * Puts the fold button between the language area and the tray icons.
      *
      * @returns {PanelMenu.Button} the fold button.
      */
     _placeFoldButton() {
         const foldButton = this._getFoldButton();
-        const box = this._getBox();
-        const languageArea = this._placeLanguageArea();
-
-        let index = 0;
-        if (languageArea && languageArea.container.get_parent() === box)
-            index = box.get_children().indexOf(languageArea.container) + 1;
 
         // The button is only shown while there is something in the floating
-        // panel, but its container stays in the panel either way: the tray area
-        // is always placed right after it, whatever it shows.
+        // panel, but its container stays in the panel either way: it is what
+        // separates the tray area from the language area, see _syncIcons().
         foldButton.container.visible = this._hasHiddenIcons();
         foldButton.setRevealed(this._iconsExpanded);
         this._applyIconSpacing(foldButton);
-
-        this._moveToBox(foldButton.container, box, index);
 
         return foldButton;
     }
@@ -523,19 +691,6 @@ export class PanelAreas extends Signals.EventEmitter {
     }
 
     /**
-     * Index right after the fold button, i.e. where the tray area starts.
-     */
-    _getTrayStartIndex() {
-        const box = this._getBox();
-        const foldButton = this._foldButton;
-
-        if (!foldButton || foldButton.container.get_parent() !== box)
-            return 0;
-
-        return box.get_children().indexOf(foldButton.container) + 1;
-    }
-
-    /**
      * @returns {boolean} whether the user hid any icon.
      */
     _hasHiddenIcons() {
@@ -576,29 +731,36 @@ export class PanelAreas extends Signals.EventEmitter {
     }
 
     /**
-     * Puts `icons` into `box`, starting at `startIndex`, in that order.
+     * Puts `actors` at the start of `box`, in that order.
      *
      * @param {St.BoxLayout} box the box to fill.
-     * @param {number} startIndex the index of the first icon.
-     * @param {BaseStatusIcon[]} icons the icons, in the order they belong in.
+     * @param {(Clutter.Actor|null)[]} actors the actors, in the order they
+     *   belong in; null entries are skipped.
      */
-    _layoutBox(box, startIndex, icons) {
-        let index = startIndex;
+    _layoutGroup(box, actors) {
+        let index = 0;
 
-        for (const icon of icons) {
-            // The icon that is being dragged is placed by the drag itself.
-            if (icon === this._drag?.icon)
+        for (const actor of actors) {
+            if (!actor)
                 continue;
 
-            const actor = icon.container;
-            const current = box.get_children().indexOf(actor);
+            // The icon that is being dragged is placed by the drag itself.
+            if (actor === this._drag?.icon.container) {
+                index++;
+                continue;
+            }
 
-            if (current !== index) {
-                if (actor.get_parent())
-                    actor.get_parent().remove_child(actor);
+            const parent = actor.get_parent();
+
+            if (parent !== box) {
+                if (parent)
+                    parent.remove_child(actor);
 
                 box.insert_child_at_index(actor,
                     Math.min(index, box.get_n_children()));
+            } else if (box.get_children().indexOf(actor) !== index) {
+                box.set_child_at_index(actor,
+                    Math.min(index, box.get_n_children() - 1));
             }
 
             index++;
@@ -823,65 +985,19 @@ export class PanelAreas extends Signals.EventEmitter {
         return boxes[boxName] ?? Main.panel._rightBox;
     }
 
-    _getLanguageIndicator() {
-        // The shell provides the input source indicator, which is what the
-        // language area is about, so we adopt it rather than showing a second
-        // language indicator next to it.
-        const shellIndicator = Main.panel.statusArea[SHELL_LANGUAGE_AREA_ROLE];
-
-        if (shellIndicator) {
-            if (this._ownLanguageIndicator) {
-                Main.panel.statusArea[LANGUAGE_AREA_ROLE] = null;
-                this._ownLanguageIndicator.destroy();
-                this._ownLanguageIndicator = null;
-            }
-
-            this._adoptedLanguageIndicator = shellIndicator;
-            return shellIndicator;
-        }
-
-        // Some session modes don't have an input source indicator in the panel
-        // at all, in that case we provide the language area ourselves.
-        if (!this._ownLanguageIndicator) {
-            try {
-                this._ownLanguageIndicator = new InputSourceIndicator();
-                Main.panel.addToStatusArea(LANGUAGE_AREA_ROLE, this._ownLanguageIndicator,
-                    0, this.boxName);
-            } catch (e) {
-                this._ownLanguageIndicator = null;
-                Util.Logger.warn(`Failed to create the language area: ${e}`);
-            }
-        }
-
-        return this._ownLanguageIndicator;
-    }
-
+    /**
+     * Gives every area back: the adopted indicator to where it came from, our
+     * own one out of the panel.
+     */
     _releaseLanguageArea() {
-        const adopted = this._adoptedLanguageIndicator;
-        if (adopted) {
-            // The spacing the indicator was given goes with the area, the shell
-            // puts its own one back on once the setting is turned on again.
-            adopted.set_style('');
+        this._releaseAdoptedLanguageArea();
 
-            // Hand the indicator back to the shell's session mode layout.
-            for (const boxName of PANEL_BOX_NAMES) {
-                const roles = Main.sessionMode.panel[boxName] ?? [];
-                const index = roles.indexOf(SHELL_LANGUAGE_AREA_ROLE);
+        if (!this._ownLanguageIndicator)
+            return;
 
-                if (index >= 0) {
-                    this._moveToBox(adopted.container, this._getBox(boxName), index);
-                    break;
-                }
-            }
-
-            this._adoptedLanguageIndicator = null;
-        }
-
-        if (this._ownLanguageIndicator) {
-            Main.panel.statusArea[LANGUAGE_AREA_ROLE] = null;
-            this._ownLanguageIndicator.destroy();
-            this._ownLanguageIndicator = null;
-        }
+        Main.panel.statusArea[LANGUAGE_AREA_ROLE] = null;
+        this._ownLanguageIndicator.destroy();
+        this._ownLanguageIndicator = null;
     }
 
     /**
@@ -920,15 +1036,15 @@ export class PanelAreas extends Signals.EventEmitter {
             this._hiddenPanelBox = new St.BoxLayout({
                 orientation: Clutter.Orientation.VERTICAL,
                 style_class: 'appindicator-hidden-panel',
-                // Keeps the panel usable as a drop target while it is empty.
-                style: 'min-width: 44px; min-height: 44px',
                 // The icons carry the spacing on both of their sides, half of
                 // it between two rows gives the grid the same rhythm.
                 spacing: Math.round(getIconSpacing() / 2),
             });
 
             // The shell theme styles this class like a floating menu, so the
-            // panel looks native in the dark and in the light theme alike.
+            // panel keeps the shape, the border and the shadow of a popup. Its
+            // background is taken over from the bar, see
+            // _applyPanelBackground().
             this._hiddenPanel = new St.Bin({
                 style_class: 'popup-menu-content appindicator-hidden-panel-container',
                 child: this._hiddenPanelBox,
@@ -936,10 +1052,46 @@ export class PanelAreas extends Signals.EventEmitter {
                 visible: false,
             });
 
+            this._applyPanelBackground();
             Util.addActor(Main.uiGroup, this._hiddenPanel);
         }
 
         return this._hiddenPanelBox;
+    }
+
+    /**
+     * Paints the floating panel with the background of the bar.
+     *
+     * The panel is a popup, so the theme gives it the color of a menu, which is
+     * not the color of the bar it belongs to. The Windows notification area
+     * keeps its flyout in the look of the taskbar, and so does this: the color
+     * and the transparency of the bar are used as they are, only with a floor
+     * so that the icons and the labels of a menu stay readable on a bar that
+     * fades out completely.
+     */
+    _applyPanelBackground() {
+        if (!this._hiddenPanel)
+            return;
+
+        const color = PanelBackground.PanelBackground.getDefault()?.color;
+        const style = [PANEL_MIN_SIZE];
+
+        // A bar that is not painted at all has no color to take over: the
+        // panel keeps the look the theme gives a popup then, which is what it
+        // had before a bar background was there to follow.
+        if (color && color.alpha > 0) {
+            const {red, green, blue} = color;
+            const alpha = Math.max(color.alpha / 255, MIN_PANEL_ALPHA);
+
+            // The theme paints the popup with a gradient of its own, which
+            // would cover the color of the bar.
+            style.push(`background-color: rgba(${red}, ${green}, ${blue}, ` +
+                `${alpha.toFixed(3)})`);
+            style.push('background-image: none');
+        }
+
+        // Keeps the panel usable as a drop target while it is empty.
+        this._hiddenPanel.set_style(style.join('; '));
     }
 
     /**
@@ -964,9 +1116,9 @@ export class PanelAreas extends Signals.EventEmitter {
 
     /**
      * Puts the floating panel next to the tray area, on the free side of the
-     * panel bar: below a bar that is at the top of the screen and above a bar
-     * that is at the bottom, so that the panel never overlaps the bar, whatever
-     * its position and its height are.
+     * panel bar: below a bar at the top of the screen, above one at the bottom,
+     * right of one at the left edge and left of one at the right edge, so that
+     * the panel never overlaps the bar, whatever its position and its size are.
      */
     _updatePanelPosition() {
         const panel = this._hiddenPanel;
@@ -981,42 +1133,71 @@ export class PanelAreas extends Signals.EventEmitter {
             return;
 
         const {x, y, width, height} = this._getGeometry(anchor);
-        const bar = this._getPanelBar();
+        const bar = this._getBar();
         const [, panelWidth] = panel.get_preferred_width(-1);
         const [, panelHeight] = panel.get_preferred_height(-1);
 
+        // Along the bar, the panel is aligned with the tray area, so that it
+        // opens towards the icons it belongs to, the way the Windows flyout
+        // does.
+        const horizontal = !bar || bar.edge === 'top' || bar.edge === 'bottom';
+        const anchorAtStart = !bar || (horizontal
+            ? x + width / 2 < bar.x + bar.width / 2
+            : y + height / 2 < bar.y + bar.height / 2);
+
+        let wantedX;
+        let wantedY;
+
+        switch (bar?.edge) {
+        case 'left':
+            wantedX = bar.x + bar.width + PANEL_GAP;
+            wantedY = anchorAtStart ? y : y + height - panelHeight;
+            break;
+        case 'right':
+            wantedX = bar.x - PANEL_GAP - panelWidth;
+            wantedY = anchorAtStart ? y : y + height - panelHeight;
+            break;
+        case 'bottom':
+            wantedY = bar.y - PANEL_GAP - panelHeight;
+            wantedX = anchorAtStart ? x : x + width - panelWidth;
+            break;
+        case 'top':
+            wantedY = bar.y + bar.height + PANEL_GAP;
+            wantedX = anchorAtStart ? x : x + width - panelWidth;
+            break;
+        default:
+            // Without a bar to measure, the anchor is what the panel is put
+            // next to, which is where the bar would have been.
+            wantedX = x + width - panelWidth;
+            wantedY = y + height + PANEL_GAP;
+        }
+
+        // The panel stays on the screen, even when it does not fit next to
+        // the bar anymore.
         const minX = monitor.x + PANEL_GAP;
         const maxX = monitor.x + monitor.width - panelWidth - PANEL_GAP;
-
-        // Without a bar to measure, the anchor is what the panel is put next
-        // to, which is where the bar would have been.
-        const wantedY = bar?.atBottom
-            ? bar.y - PANEL_GAP - panelHeight
-            : (bar ? bar.y + bar.height : y + height) + PANEL_GAP;
-
-        // The panel stays on the screen, even when it does not fit next to the
-        // bar anymore.
         const minY = monitor.y + PANEL_GAP;
         const maxY = monitor.y + monitor.height - panelHeight - PANEL_GAP;
 
         panel.set_position(
-            Math.round(Math.min(Math.max(x + width - panelWidth, minX), maxX)),
+            Math.round(Math.min(Math.max(wantedX, minX), maxX)),
             Math.round(Math.min(Math.max(wantedY, minY), maxY)));
     }
 
     /**
-     * The vertical geometry of the panel bar the extension areas live in.
+     * The geometry of the panel bar and the side of the screen it is on.
      *
      * The bar is measured instead of taken for granted: the shell puts it at
      * the top of the screen, but the layouts of other desktops (Ubuntu's own
-     * one, for instance) and the panel extensions move it to the bottom, and
-     * its height changes with the theme and with the icons that are in it.
+     * one, for instance) and the panel extensions move it to the bottom or to
+     * one of the sides, and its size changes with the theme and with the icons
+     * that are in it.
      *
-     * @returns {{y: number, height: number, atBottom: boolean}|null} the top,
-     *   the height and the side of the screen of the bar, or null when it
-     *   cannot be measured.
+     * @returns {{x: number, y: number, width: number, height: number,
+     *   vertical: boolean, edge: string}|null} the bar and the side of the
+     *   screen it is on, or null when it cannot be measured.
      */
-    _getPanelBar() {
+    _getBar() {
         const monitor = Main.layoutManager.primaryMonitor;
 
         if (!monitor)
@@ -1027,21 +1208,28 @@ export class PanelAreas extends Signals.EventEmitter {
         // while the shell is still building the panel.
         let geometry = Main.panel ? this._getGeometry(Main.panel) : null;
 
-        if (!geometry?.height)
+        if (!geometry?.width || !geometry?.height)
             geometry = this._getGeometry(Main.layoutManager.panelBox);
 
-        if (!geometry.height)
+        if (!geometry?.width || !geometry?.height)
             return null;
 
-        const {y, height} = geometry;
+        const {x, y, width, height} = geometry;
 
-        // A bar whose middle sits in the lower half of the screen is a bar at
-        // the bottom, whatever put it there.
-        return {
-            y,
-            height,
-            atBottom: y + height / 2 > monitor.y + monitor.height / 2,
-        };
+        // A bar that is taller than it is wide is a bar at one of the sides,
+        // whatever put it there. A bar whose middle is in the first half of
+        // the screen is a bar at the top or at the left edge.
+        const vertical = height > width;
+        const centerX = x + width / 2;
+        const centerY = y + height / 2;
+        let edge;
+
+        if (vertical)
+            edge = centerX < monitor.x + monitor.width / 2 ? 'left' : 'right';
+        else
+            edge = centerY < monitor.y + monitor.height / 2 ? 'top' : 'bottom';
+
+        return {x, y, width, height, vertical, edge};
     }
 
     /**
@@ -1273,12 +1461,17 @@ export class PanelAreas extends Signals.EventEmitter {
             return;
 
         const box = this._getBox();
-        const start = this._getFoldButtonContainer(box);
+        const segment = this._getTraySegment(box);
 
-        if (!start)
+        if (!segment)
             return;
 
-        const anchor = this._findDropAnchor(box, x, icon.container, start);
+        // The icons only live in the tray part of the block: the language area
+        // and the fold button keep the place they are put in.
+        if (!this._isInTraySegment(segment, x, y))
+            return;
+
+        const anchor = this._findDropAnchor(segment, x, y, icon.container);
         this._moveActorAfter(icon.container, box, anchor);
     }
 
@@ -1322,22 +1515,88 @@ export class PanelAreas extends Signals.EventEmitter {
     }
 
     /**
-     * The icon the dragged one has to be placed after so that it lands under
-     * the pointer. Only the icons of `box` that are shown are taken into
-     * account, whatever else the box holds (the language area, the fold button,
-     * the icons that show nothing, other panel items, ...) keeps its place.
+     * The children of `box` the tray icons live in and the fold button that
+     * bounds them.
      *
-     * @param {St.BoxLayout} box the box the pointer is in.
+     * The tray icons are only ever rearranged among themselves: the language
+     * area and the fold button stay where _syncIcons() put them, so the icons
+     * may neither be dragged in front of the language area nor across the fold
+     * button, which is what keeps them apart.
+     *
+     * @param {St.BoxLayout} box the box the tray area is in.
+     * @returns {{children: Clutter.Actor[], boundary: Clutter.Actor,
+     *   afterBoundary: boolean, vertical: boolean}|null} the segment, or null
+     *   when there is no fold button to measure it with.
+     */
+    _getTraySegment(box) {
+        const boundary = this._getFoldButtonContainer(box);
+
+        if (!boundary)
+            return null;
+
+        const children = box.get_children();
+        const boundaryIndex = children.indexOf(boundary);
+        const afterBoundary = this._imeBeforeTray;
+
+        return {
+            children: afterBoundary
+                ? children.slice(boundaryIndex + 1)
+                : children.slice(0, boundaryIndex),
+            boundary,
+            afterBoundary,
+            vertical: box.orientation === Clutter.Orientation.VERTICAL,
+        };
+    }
+
+    /**
+     * @param {{boundary: Clutter.Actor, afterBoundary: boolean,
+     *   vertical: boolean}} segment the tray segment.
      * @param {number} x the pointer position.
+     * @param {number} y the pointer position.
+     * @returns {boolean} whether the pointer is on the side of the fold button
+     *   the tray icons are.
+     */
+    _isInTraySegment(segment, x, y) {
+        const {boundary, afterBoundary, vertical} = segment;
+
+        // A hidden fold button takes no room and is not allocated, so there is
+        // nothing to measure the segment against. The drop anchor still keeps
+        // the icons on their side of it, see _findDropAnchor().
+        if (!boundary.visible)
+            return true;
+
+        const geometry = this._getGeometry(boundary);
+        const pointer = vertical ? y : x;
+        const start = vertical ? geometry.y : geometry.x;
+
+        return afterBoundary
+            ? pointer >= start + (vertical ? geometry.height : geometry.width)
+            : pointer <= start;
+    }
+
+    /**
+     * The icon the dragged one has to be placed after so that it lands under
+     * the pointer. Only the icons of the segment that are shown are taken into
+     * account, the language area, the fold button, the icons that show nothing
+     * and the other panel items keep their place.
+     *
+     * @param {{children: Clutter.Actor[], boundary: Clutter.Actor,
+     *   afterBoundary: boolean, vertical: boolean}} segment the tray segment.
+     * @param {number} x the pointer position.
+     * @param {number} y the pointer position.
      * @param {Clutter.Actor} dragged the container that is being moved.
-     * @param {Clutter.Actor|null} start the container the icon may never be
-     *   placed in front of.
      * @returns {Clutter.Actor|null} what to place the icon after.
      */
-    _findDropAnchor(box, x, dragged, start = null) {
-        let anchor = start;
+    _findDropAnchor(segment, x, y, dragged) {
+        const {children, boundary, afterBoundary, vertical} = segment;
+        const pointer = vertical ? y : x;
 
-        for (const child of box.get_children()) {
+        // The fold button is where the tray icons start, so an icon that is
+        // dropped in front of the first one follows the button, not the
+        // language area.
+        let anchor = afterBoundary ? boundary : null;
+
+        for (const child of children) {
             const icon = this._iconForContainer(child);
 
             // The icons that show nothing are not on the panel, so they cannot
@@ -1346,9 +1605,11 @@ export class PanelAreas extends Signals.EventEmitter {
             if (child === dragged || !icon || !child.visible)
                 continue;
 
-            const {x: childX, width} = this._getGeometry(child);
+            const geometry = this._getGeometry(child);
+            const start = vertical ? geometry.y : geometry.x;
+            const size = vertical ? geometry.height : geometry.width;
 
-            if (x < childX + width / 2)
+            if (pointer < start + size / 2)
                 break;
 
             anchor = child;
