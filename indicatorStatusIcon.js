@@ -24,6 +24,7 @@ import * as AppDisplay from 'resource:///org/gnome/shell/ui/appDisplay.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as Panel from 'resource:///org/gnome/shell/ui/panel.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
+import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 import * as AppIndicator from './appIndicator.js';
 import * as PanelAreas from './panelAreas.js';
@@ -54,6 +55,7 @@ export function addIconToPanel(statusIcon) {
         // Keep the tray area right next to the language area, and let
         // PanelAreas take care of re-placing us when the panel layout changes.
         panelAreas.placeInTrayArea(statusIcon);
+        statusIcon.useOwnMenuManager();
         return;
     }
 
@@ -67,6 +69,7 @@ export function addIconToPanel(statusIcon) {
     const settings = SettingsManager.getDefaultGSettings();
     Main.panel.addToStatusArea(`appindicator-${statusIcon.uniqueId}`, statusIcon, 1,
         settings.get_string('tray-pos'));
+    statusIcon.useOwnMenuManager();
 }
 
 export function getTrayIcons() {
@@ -197,6 +200,14 @@ class IndicatorBaseStatusIcon extends PanelMenu.Button {
      * The icon may not act on the click that has been pressed to start a drag.
      */
     cancelPendingClicks() {
+    }
+
+    /**
+     * Keeps the menu of the icon out of the menu switching of the panel, see
+     * IndicatorStatusIcon.useOwnMenuManager(). Icons without a menu of their own
+     * have nothing to keep anywhere.
+     */
+    useOwnMenuManager() {
     }
 
     _onHoverChanged() {
@@ -375,6 +386,33 @@ class IndicatorStatusIcon extends BaseStatusIcon {
         super._onDestroy();
     }
 
+    /**
+     * Keeps the menu of this icon out of the menu switching of the panel.
+     *
+     * The panel hands the menu of every icon of the status area to its own menu
+     * manager, and while a menu is open that manager opens the menu of whatever
+     * icon the pointer moves over — see the Clutter.EventType.ENTER branch of
+     * PopupMenuManager._onCapturedEvent() in the popupMenu.js of the shell. A
+     * tray menu is not a panel menu: it was opened on purpose, and it goes away
+     * when it is closed or when its own icon is clicked again. Moving the
+     * pointer over another icon must leave it where it is.
+     *
+     * The menu that gets opened is one the manager of the open menu knows about,
+     * so a manager of its own — one that knows no other menu than this icon's —
+     * is what keeps the menu in place. The menu is only known to a single
+     * manager at a time, which is why it has to leave the manager of the panel
+     * first.
+     */
+    useOwnMenuManager() {
+        if (this._menuManager || !this.menu)
+            return;
+
+        Main.panel.menuManager.removeMenu(this.menu);
+
+        this._menuManager = new PopupMenu.PopupMenuManager(this);
+        this._menuManager.addMenu(this.menu);
+    }
+
     get uniqueId() {
         return this._indicator.uniqueId;
     }
@@ -534,6 +572,12 @@ class IndicatorStatusIcon extends BaseStatusIcon {
         if (event.get_button() === Clutter.BUTTON_MIDDLE) {
             if (Main.panel.menuManager.activeMenu)
                 Main.panel.menuManager._closeMenu(true, Main.panel.menuManager.activeMenu);
+
+            // The menus of the tray icons are not in the manager of the panel
+            // anymore, see useOwnMenuManager(): the open one is closed here.
+            for (const icon of getAppIndicatorIcons())
+                icon.menu?.close();
+
             this._indicator.secondaryActivate(event.get_time(), ...event.get_coords());
             return Clutter.EVENT_STOP;
         }
