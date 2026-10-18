@@ -1314,6 +1314,12 @@ export class PanelAreas extends Signals.EventEmitter {
         if (shouldShow) {
             this._hiddenPanel.get_parent()?.set_child_above_sibling(
                 this._hiddenPanel, null);
+
+            // The icon that is being dragged is above the panel as well: it is
+            // carried over it, and the panel would paint over it otherwise.
+            const clone = this._drag?.clone;
+            clone?.get_parent()?.set_child_above_sibling(clone, null);
+
             this._updatePanelPosition();
         }
     }
@@ -1682,7 +1688,6 @@ export class PanelAreas extends Signals.EventEmitter {
         clone.opacity = 200;
         clone.set_position(Math.round(x - (press.x - containerX)),
             Math.round(y - (press.y - containerY)));
-        Util.addActor(Main.uiGroup, clone);
 
         // The icon itself stays where it is, dimmed, the clone follows the
         // pointer and the icon moves when the pointer reaches its new place.
@@ -1695,8 +1700,11 @@ export class PanelAreas extends Signals.EventEmitter {
             offsetY: press.y - containerY,
         };
 
-        // The panel has to be there to be a drop target, empty or not.
+        // The panel has to be there to be a drop target, empty or not. It is
+        // shown before the clone is put on the stage, because showing it raises
+        // it above everything else that lives there.
         this._updatePanel();
+        Util.addActor(Main.uiGroup, clone);
         this._logState('drag started');
 
         // It is put in place once and then stays where it is: moving it along
