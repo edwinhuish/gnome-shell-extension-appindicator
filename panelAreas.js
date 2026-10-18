@@ -79,6 +79,41 @@ const PANEL_COLUMN_STEPS = [
 const MAX_PANEL_COLUMNS = 8;
 
 /**
+ * Whether a box lays its children out from the top down.
+ *
+ * `St.BoxLayout` grew an `orientation` property in GNOME 48; before that the
+ * only way to say it is the boolean `vertical`. A GObject constructor throws on
+ * a property it does not know, and a throw while the areas are being laid out
+ * takes the rest of the layout with it — on a shell where only one of the two
+ * exists, passing the other one is enough to make the floating panel never
+ * appear at all.
+ *
+ * @param {St.BoxLayout} box a box.
+ * @returns {boolean} whether its children are stacked vertically.
+ */
+function isVerticalBox(box) {
+    if (box.find_property('orientation'))
+        return box.orientation === Clutter.Orientation.VERTICAL;
+
+    return box.vertical;
+}
+
+/**
+ * Turns a box into a row or a column, whichever property the shell has.
+ *
+ * @param {St.BoxLayout} box a box.
+ * @param {boolean} vertical whether its children stack from the top down.
+ */
+function setBoxOrientation(box, vertical) {
+    if (box.find_property('orientation')) {
+        box.orientation = vertical
+            ? Clutter.Orientation.VERTICAL : Clutter.Orientation.HORIZONTAL;
+    } else {
+        box.vertical = vertical;
+    }
+}
+
+/**
  * The space every panel item of ours keeps on both of its sides, in pixels per
  * side, as the "Icon Spacing" setting in the preferences asks for it.
  */
@@ -803,13 +838,28 @@ export class PanelAreas extends Signals.EventEmitter {
     _updateIconSpacing() {
         this._applyIconSpacing(this.languageArea);
         this._applyIconSpacing(this._foldButton);
-
-        if (this._hiddenPanelBox)
-            this._hiddenPanelBox.spacing = Math.round(getIconSpacing() / 2);
+        this._updateRowSpacing();
 
         // The spacing changes the width of the icons and of the fold button,
         // which is what the floating panel is aligned with.
         this._queuePanelReposition();
+    }
+
+    /**
+     * Gives the rows of the grid the room the setting asks for.
+     *
+     * Half of the icon spacing, the way the horizontal spacing of the icons
+     * falls on both of their sides: a row of the grid then reads the same as a
+     * row of icons in the tray area.
+     */
+    _updateRowSpacing() {
+        const gap = Math.round(getIconSpacing() / 2);
+        const style = gap > 0 ? `margin-bottom: ${gap}px` : '';
+
+        for (const row of this._panelRows) {
+            if (row.get_style() !== style)
+                row.set_style(style);
+        }
     }
 
     /**
@@ -953,12 +1003,13 @@ export class PanelAreas extends Signals.EventEmitter {
     _growPanelRows(count) {
         while (this._panelRows.length < count) {
             const row = new St.BoxLayout({
-                orientation: Clutter.Orientation.HORIZONTAL,
                 style_class: 'appindicator-hidden-panel-row',
             });
 
+            setBoxOrientation(row, false);
             this._hiddenPanelBox.add_child(row);
             this._panelRows.push(row);
+            this._updateRowSpacing();
         }
     }
 
@@ -1164,13 +1215,15 @@ export class PanelAreas extends Signals.EventEmitter {
      */
     _getHiddenPanelBox() {
         if (!this._hiddenPanel) {
+            // No `spacing` here: GNOME 48 took that property off St.BoxLayout,
+            // and a constructor argument the shell does not know throws, which
+            // is enough to keep the panel from ever being built. The gap
+            // between two rows is a margin on the rows instead, see
+            // _updateRowSpacing().
             this._hiddenPanelBox = new St.BoxLayout({
-                orientation: Clutter.Orientation.VERTICAL,
                 style_class: 'appindicator-hidden-panel',
-                // The icons carry the spacing on both of their sides, half of
-                // it between two rows gives the grid the same rhythm.
-                spacing: Math.round(getIconSpacing() / 2),
             });
+            setBoxOrientation(this._hiddenPanelBox, true);
 
             // The shell theme styles this class like a floating menu, so the
             // panel keeps the shape, the border and the shadow of a popup. Its
@@ -1676,7 +1729,7 @@ export class PanelAreas extends Signals.EventEmitter {
                 : children.slice(0, boundaryIndex),
             boundary,
             afterBoundary,
-            vertical: box.orientation === Clutter.Orientation.VERTICAL,
+            vertical: isVerticalBox(box),
         };
     }
 
