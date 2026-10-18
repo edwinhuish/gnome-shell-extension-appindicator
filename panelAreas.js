@@ -293,6 +293,7 @@ export class PanelAreas extends Signals.EventEmitter {
         this._drag = null;
         this._panelFrozen = false;
         this._capturedEventId = 0;
+        this._swallowRelease = false;
         this._droppingIds = false;
 
         Util.connectSmart(settings, 'changed::tray-pos', this, () => this.relayout());
@@ -1486,6 +1487,15 @@ export class PanelAreas extends Signals.EventEmitter {
      * Makes an icon draggable: pressing it and moving the pointer moves it
      * inside the tray area, which is how the order of the icons is changed.
      *
+     * Only the press is taken from the icon itself, everything that comes after
+     * it is watched on the stage. An indicator that does not support activation
+     * opens its menu on the press already (see vfunc_button_press_event() in
+     * indicatorStatusIcon.js), and that menu grabs the pointer: the motion that
+     * would turn the press into a drag is then delivered to the menu, never to
+     * the icon, so a drag of such an icon could not start at all and the icon
+     * stayed behind looking pressed. The stage sees the pointer no matter what
+     * holds it, which is why the drag is run from there.
+     *
      * @param {BaseStatusIcon} icon the icon to make draggable.
      */
     _setupDrag(icon) {
@@ -1495,10 +1505,6 @@ export class PanelAreas extends Signals.EventEmitter {
         const ids = [
             icon.connect('button-press-event',
                 (_actor, event) => this._onButtonPress(icon, event)),
-            icon.connect('button-release-event',
-                (_actor, event) => this._onButtonRelease(icon, event)),
-            icon.connect('motion-event',
-                (_actor, event) => this._onMotion(icon, event)),
             icon.connect('destroy', () => this._teardownDrag(icon)),
         ];
 
@@ -1512,6 +1518,9 @@ export class PanelAreas extends Signals.EventEmitter {
             return;
 
         this._dragHandlers.delete(icon);
+
+        if (this._press?.icon === icon)
+            this._press = null;
 
         for (const id of ids) {
             try {
@@ -1532,24 +1541,112 @@ export class PanelAreas extends Signals.EventEmitter {
         this._press = {icon, x, y};
 
         // The press may still turn into a normal click, so it is not consumed
-        // here; the drag only starts once the pointer moved far enough.
+        // here; the drag only starts once the pointer moved far enough, see
+        // _onPointerMotion().
+        this._watchPointer();
+
         return Clutter.EVENT_PROPAGATE;
     }
 
-    _onButtonRelease(icon, _event) {
-        if (this._press?.icon === icon)
+    /**
+     * Watches the pointer on the stage until the button is released again.
+     */
+    _watchPointer() {
+        if (this._capturedEventId)
+            return;
+
+        this._capturedEventId = global.stage.connect('captured-event',
+            (_stage, event) => this._onCapturedEvent(event));
+    }
+
+    _unwatchPointer() {
+        if (!this._capturedEventId)
+            return;
+
+        global.stage.disconnect(this._capturedEventId);
+        this._capturedEventId = 0;
+    }
+
+    /**
+     * @param {Clutter.Event} event a pointer event, captured before it reaches
+     *   whatever is under the pointer.
+     * @returns {number} what the stage has to do with the event.
+     */
+    _onCapturedEvent(event) {
+        switch (event.type()) {
+        case Clutter.EventType.MOTION:
+            return this._onPointerMotion(event);
+        case Clutter.EventType.BUTTON_PRESS:
+            // A press while an icon is being dragged is what a release that
+            // never arrived leaves behind: the drag is given up instead of
+            // being left running with the pointer, and the press is not handed
+            // to the icon, whose menu would open on top of the drag.
+            if (this._drag) {
+                this._cancelDrag();
+                this._press = null;
+                return Clutter.EVENT_STOP;
+            }
+
+            this._press = null;
+            return Clutter.EVENT_PROPAGATE;
+        case Clutter.EventType.BUTTON_RELEASE: {
+            if (this._drag) {
+                this._finishDrag();
+                this._unwatchPointer();
+                return Clutter.EVENT_STOP;
+            }
+
             this._press = null;
 
-        return Clutter.EVENT_PROPAGATE;
+            // A drag that was cancelled with Escape is still under the button
+            // that started it: the release belongs to the drag, not to the
+            // icon, and must not open its menu.
+            const swallow = this._swallowRelease;
+            this._swallowRelease = false;
+            this._unwatchPointer();
+
+            return swallow ? Clutter.EVENT_STOP : Clutter.EVENT_PROPAGATE;
+        }
+        case Clutter.EventType.KEY_PRESS:
+            if (event.get_key_symbol() !== Clutter.KEY_Escape)
+                return Clutter.EVENT_PROPAGATE;
+
+            if (this._drag) {
+                this._cancelDrag();
+                this._swallowRelease = true;
+                return Clutter.EVENT_STOP;
+            }
+
+            // Escape gives up a press that has not turned into a drag: the
+            // release that follows is not a click on the icon anymore.
+            if (this._press) {
+                this._press = null;
+                this._swallowRelease = true;
+            }
+
+            this._unwatchPointer();
+            return Clutter.EVENT_PROPAGATE;
+        default:
+            return Clutter.EVENT_PROPAGATE;
+        }
     }
 
-    _onMotion(icon, event) {
+    /**
+     * @param {Clutter.Event} event a pointer motion event.
+     * @returns {number} what the stage has to do with the event.
+     */
+    _onPointerMotion(event) {
+        const [x, y] = event.get_coords();
+
+        if (this._drag) {
+            this._moveDrag(x, y);
+            return Clutter.EVENT_STOP;
+        }
+
         const press = this._press;
 
-        if (!press || press.icon !== icon || this._drag)
+        if (!press || !this._trayIcons.has(press.icon))
             return Clutter.EVENT_PROPAGATE;
-
-        const [x, y] = event.get_coords();
 
         if (Math.abs(x - press.x) < DRAG_THRESHOLD &&
             Math.abs(y - press.y) < DRAG_THRESHOLD)
@@ -1571,8 +1668,10 @@ export class PanelAreas extends Signals.EventEmitter {
 
         this._press = null;
 
-        // The press already reached the icon and may have made it schedule a
-        // menu toggle: a drag must not open the menu on top of it.
+        // The press already reached the icon, and an indicator that has no
+        // activation opens its menu on it: the menu grabbed the pointer, which
+        // is why the drag is run from the stage, and it has to go before the
+        // icon can be dragged. The icon must not keep looking pressed either.
         icon.cancelPendingClicks();
         icon.menu?.close();
         icon.remove_style_pseudo_class('active');
@@ -1604,31 +1703,6 @@ export class PanelAreas extends Signals.EventEmitter {
         // with its contents would move the drop target out from under the
         // pointer as soon as an icon lands in it.
         this._panelFrozen = true;
-
-        this._capturedEventId = global.stage.connect('captured-event',
-            (_stage, event) => this._onCapturedEvent(event));
-    }
-
-    _onCapturedEvent(event) {
-        switch (event.type()) {
-        case Clutter.EventType.MOTION: {
-            const [x, y] = event.get_coords();
-            this._moveDrag(x, y);
-            return Clutter.EVENT_STOP;
-        }
-        case Clutter.EventType.BUTTON_RELEASE:
-            this._finishDrag();
-            return Clutter.EVENT_STOP;
-        case Clutter.EventType.KEY_PRESS:
-            if (event.get_key_symbol() === Clutter.KEY_Escape) {
-                this._cancelDrag();
-                return Clutter.EVENT_STOP;
-            }
-
-            return Clutter.EVENT_PROPAGATE;
-        default:
-            return Clutter.EVENT_PROPAGATE;
-        }
     }
 
     _moveDrag(x, y) {
@@ -1886,11 +1960,6 @@ export class PanelAreas extends Signals.EventEmitter {
         this._drag = null;
         this._panelFrozen = false;
 
-        if (this._capturedEventId) {
-            global.stage.disconnect(this._capturedEventId);
-            this._capturedEventId = 0;
-        }
-
         // The icon may have been destroyed while it was being dragged.
         if (this._trayIcons.has(drag.icon))
             drag.icon.container.opacity = 255;
@@ -1935,6 +2004,7 @@ export class PanelAreas extends Signals.EventEmitter {
 
     destroy() {
         this._cancelDrag();
+        this._unwatchPointer();
 
         if (this._repositionId) {
             GLib.source_remove(this._repositionId);
