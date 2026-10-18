@@ -607,8 +607,27 @@ class IndicatorTrayIcon extends BaseStatusIcon {
         this._touchDelayPromise?.cancel();
     }
 
+    /**
+     * The id of this icon, which is what the hidden state and the order of the
+     * icons are stored under.
+     *
+     * The pid of the application is not part of it: it changes every time the
+     * application is started again, so the icon would come back as a new icon
+     * with every restart, losing the place the user gave it and leaving the
+     * stored ids behind. The window class of the tray window is what stays the
+     * same, which is why it is the id.
+     *
+     * Two tray windows of the same application would be one id; a legacy tray
+     * application has one window, and an application that shows several icons
+     * uses a status notifier item, whose id comes from the bus name.
+     */
     get uniqueId() {
-        return `legacy:${this._icon.wm_class}:${this._icon.pid}`;
+        const wmClass = this._icon?.wm_class;
+
+        if (wmClass)
+            return `legacy:${wmClass}`;
+
+        return `legacy:pid:${this._icon?.pid}`;
     }
 
     get displayName() {
