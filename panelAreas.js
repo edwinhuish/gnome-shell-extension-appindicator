@@ -998,11 +998,20 @@ export class PanelAreas extends Signals.EventEmitter {
      * Whether the panel stays open is the user's state, see _syncIcons().
      */
     _updateHiddenIcons() {
+        const wasEmpty = !this._hiddenIcons.size;
+
         this._hiddenIcons = new Set(this._getSettings().get_strv('hidden-icons'));
 
-        // Nothing left to show, so collapse back.
-        if (!this._hiddenIcons.size)
+        if (!this._hiddenIcons.size) {
+            // Nothing left to show, so collapse back.
             this._iconsExpanded = false;
+        } else if (wasEmpty) {
+            // The first icon that is hidden opens the panel it goes into. An
+            // icon that disappears from the tray with nothing appearing
+            // anywhere is what the feature not working looks like, so the panel
+            // has to be seen once for the icon to be seen going somewhere.
+            this._iconsExpanded = true;
+        }
 
         this.relayout();
     }
