@@ -16,6 +16,7 @@
 
 import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
+import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
 import St from 'gi://St';
 
@@ -340,6 +341,10 @@ class IndicatorStatusIcon extends BaseStatusIcon {
         this._lastClickX = -1;
         this._lastClickY = -1;
 
+        // Set by a press that may still turn into a drag, see
+        // vfunc_button_press_event().
+        this._menuOnRelease = false;
+
         this._box.add_style_class_name('appindicator-box');
 
         Util.connectSmart(this._indicator, 'ready', this, this._showIfReady);
@@ -423,6 +428,11 @@ class IndicatorStatusIcon extends BaseStatusIcon {
 
     cancelPendingClicks() {
         this._waitDoubleClickPromise?.cancel();
+
+        // The press was taken by a drag (see PanelAreas): the click it would
+        // have been went with it, and the menu that click would have opened
+        // must not come out of the drag either.
+        this._menuOnRelease = false;
     }
 
     _updateMenu() {
@@ -533,14 +543,44 @@ class IndicatorStatusIcon extends BaseStatusIcon {
             return Clutter.EVENT_PROPAGATE;
         }
 
-        const doubleClickHandled = this._maybeHandleDoubleClick(event);
-        if (doubleClickHandled === Clutter.EVENT_PROPAGATE &&
-            event.get_button() === Clutter.BUTTON_PRIMARY &&
-            this.menu.numMenuItems) {
-            if (this._indicator.supportsActivation !== false)
-                this._waitForDoubleClick().catch(logError);
-            else
-                this.menu.toggle();
+        // A press on an icon of the tray area may be the start of a drag (see
+        // PanelAreas): the icon is taken out of the area and carried to
+        // another place on it. A menu that opened here would grab the pointer,
+        // and the motion of the drag would be delivered to the menu instead of
+        // the pointer that is dragging, so the drag could never start and the
+        // icon would stay behind looking pressed. The menu therefore waits for
+        // the release, which a click delivers and a drag swallows.
+        this._menuOnRelease = event.get_button() === Clutter.BUTTON_PRIMARY;
+
+        return Clutter.EVENT_PROPAGATE;
+    }
+
+    vfunc_button_release_event(event) {
+        if (!this._menuOnRelease)
+            return Clutter.EVENT_PROPAGATE;
+
+        this._menuOnRelease = false;
+
+        if (event.get_button() !== Clutter.BUTTON_PRIMARY ||
+            !this.menu?.numMenuItems)
+            return Clutter.EVENT_PROPAGATE;
+
+        // What the press used to do, done on the release instead: the second
+        // click of a double click still opens the indicator itself, a single
+        // one opens its menu once the double click is out of the question.
+        if (this._maybeHandleDoubleClick(event) === Clutter.EVENT_STOP)
+            return Clutter.EVENT_STOP;
+
+        if (this._indicator.supportsActivation !== false) {
+            this._waitForDoubleClick().catch(logError);
+        } else {
+            // The menu may not be opened while the release is being handled:
+            // the popup would grab the pointer and close again on the very
+            // event that opened it. One turn of the main loop later it stays.
+            GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+                this.menu?.toggle();
+                return GLib.SOURCE_REMOVE;
+            });
         }
 
         return Clutter.EVENT_PROPAGATE;
