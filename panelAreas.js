@@ -450,9 +450,9 @@ export class PanelAreas extends Signals.EventEmitter {
         // The icons the user hid live in the floating panel, the rest stays in
         // the tray area.
         const trayIcons = visibleIcons.filter(
-            icon => !this._hiddenIcons.has(icon.uniqueId));
+            icon => !this._hiddenIcons.has(icon.settingsId));
         const hiddenIcons = visibleIcons.filter(
-            icon => this._hiddenIcons.has(icon.uniqueId));
+            icon => this._hiddenIcons.has(icon.settingsId));
 
         // Icons that show nothing are never seen: they are kept in the tray
         // area, where they take no room, instead of the floating panel, so that
@@ -491,7 +491,7 @@ export class PanelAreas extends Signals.EventEmitter {
      * @param {BaseStatusIcon[]} icons the icons there are.
      */
     _warnAboutUnmatchedIcons(icons) {
-        const known = new Set(icons.map(icon => icon.uniqueId));
+        const known = new Set(icons.map(icon => icon.settingsId));
         const unmatched = [...this._hiddenIcons].filter(id => !known.has(id));
 
         if (!unmatched.length) {
@@ -774,7 +774,7 @@ export class PanelAreas extends Signals.EventEmitter {
         const positions = new Map(allIcons.map((icon, index) => [icon, index]));
         const order = new Map(this._iconOrder.map((id, index) => [id, index]));
 
-        const orderIndex = icon => order.get(icon.uniqueId) ?? Number.MAX_SAFE_INTEGER;
+        const orderIndex = icon => order.get(icon.settingsId) ?? Number.MAX_SAFE_INTEGER;
 
         // Icons the user never dragged keep the order they showed up in.
         return allIcons.sort((a, b) =>
@@ -953,20 +953,20 @@ export class PanelAreas extends Signals.EventEmitter {
     }
 
     /**
-     * @param {string} uniqueId the id of an indicator.
+     * @param {string} settingsId the id of an indicator.
      * @param {boolean} hidden whether it belongs into the floating panel.
      */
-    _setIconHidden(uniqueId, hidden) {
+    _setIconHidden(settingsId, hidden) {
         const settings = this._getSettings();
         const hiddenIcons = new Set(settings.get_strv('hidden-icons'));
         const changed = hidden
-            ? !hiddenIcons.has(uniqueId) : hiddenIcons.delete(uniqueId);
+            ? !hiddenIcons.has(settingsId) : hiddenIcons.delete(settingsId);
 
         if (!changed)
             return;
 
         if (hidden)
-            hiddenIcons.add(uniqueId);
+            hiddenIcons.add(settingsId);
 
         settings.set_strv('hidden-icons', [...hiddenIcons]);
     }
@@ -978,7 +978,7 @@ export class PanelAreas extends Signals.EventEmitter {
     _publishKnownIcons() {
         const settings = this._getSettings();
         const knownIcons = [...this._trayIcons].map(icon =>
-            [icon.uniqueId, icon.displayName || icon.uniqueId]);
+            [icon.settingsId, icon.displayName || icon.settingsId]);
 
         const value = new GLib.Variant('a(ss)', knownIcons);
         if (!settings.get_value('known-icons').equal(value))
@@ -995,14 +995,14 @@ export class PanelAreas extends Signals.EventEmitter {
         for (const child of box.get_children()) {
             const icon = this._iconForContainer(child);
             if (icon)
-                order.push(icon.uniqueId);
+                order.push(icon.settingsId);
         }
 
         for (const row of this._panelRows) {
             for (const child of row.get_children()) {
                 const icon = this._iconForContainer(child);
                 if (icon)
-                    order.push(icon.uniqueId);
+                    order.push(icon.settingsId);
             }
         }
 
@@ -1551,7 +1551,7 @@ export class PanelAreas extends Signals.EventEmitter {
      */
     _previewIconInPanel(icon) {
         const hiddenIcons = this._visibleIcons().filter(
-            i => this._hiddenIcons.has(i.uniqueId));
+            i => this._hiddenIcons.has(i.settingsId));
 
         if (!hiddenIcons.includes(icon))
             hiddenIcons.push(icon);
@@ -1726,7 +1726,7 @@ export class PanelAreas extends Signals.EventEmitter {
         // The order goes first: writing the hidden state moves the icons around
         // and the place the icon was dropped at would be lost otherwise.
         this._persistOrder();
-        this._setIconHidden(icon.uniqueId, inPanel);
+        this._setIconHidden(icon.settingsId, inPanel);
         this.relayout();
     }
 

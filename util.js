@@ -37,6 +37,54 @@ export function indicatorId(service, busName, objectPath) {
     return `${busName}@${objectPath}`;
 }
 
+/**
+ * The id an indicator is remembered by in the settings.
+ *
+ * The id an indicator is known by on the bus is not one to store: an
+ * application that exports a StatusNotifierItem gets
+ * `org.kde.StatusNotifierItem-<pid>-<n>` as its name, and an application that
+ * only exports the item on its own connection shows up as `:1.105@<path>`.
+ * Both start with a number that changes when the application is started again.
+ * A hidden icon or a dragged position stored under such an id is lost the next
+ * time that application runs, and the entries pile up in the preferences as
+ * icons that are "not running right now" for ever.
+ *
+ * The Id property of the item is the name the application gives itself, and it
+ * is the same on every run, which is what the user's choice has to follow. It
+ * is the app's own id rather than a per process one: two copies of the same
+ * application share a hidden state, the way the Windows notification area does
+ * not keep a state per process either.
+ *
+ * Without an Id the object path is the best that is left, it is what the
+ * Ayatana items behind a `:1.<n>` connection share between runs.
+ *
+ * @param {string|null} sniId the Id property of the item, if it has one.
+ * @param {string} uniqueId the id of the indicator on the bus.
+ * @returns {string} the id to store in the settings.
+ */
+export function settingsId(sniId, uniqueId) {
+    if (sniId)
+        return `sni:${sniId}`;
+
+    // ":1.105@/org/ayatana/NotificationItem/livepatch": the connection number
+    // is new on every run, the path is not.
+    const at = uniqueId.indexOf('@');
+    if (uniqueId.startsWith(':') && at > 0)
+        return `path:${uniqueId.slice(at + 1)}`;
+
+    return uniqueId;
+}
+
+/**
+ * @param {string} id an id from the settings.
+ * @returns {boolean} whether the id carries something that changes between two
+ *   runs of an application, and so can never be matched again.
+ */
+export function isUnstableSettingsId(id) {
+    return /^org\.kde\.StatusNotifierItem-\d+-\d+$/.test(id) ||
+        /^:\d+\.\d+(?:@|$)/.test(id);
+}
+
 
 export class NameWatcher extends Signals.EventEmitter {
     constructor(name) {

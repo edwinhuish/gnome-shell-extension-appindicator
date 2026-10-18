@@ -436,6 +436,7 @@ export class AppIndicator extends Signals.EventEmitter {
         this.busName = busName;
         this._service = service;
         this._uniqueId = Util.indicatorId(service, busName, object);
+        this._settingsId = null;
 
         this._cancellable = new Gio.Cancellable();
         this._proxy = new AppIndicatorProxy(busName, object);
@@ -616,6 +617,44 @@ export class AppIndicator extends Signals.EventEmitter {
 
     get uniqueId() {
         return this._uniqueId;
+    }
+
+    /**
+     * The id the hidden state and the position of this icon are stored under.
+     *
+     * It has to survive a restart of the application, which the id on the bus
+     * does not (see settingsId() in util.js), so it is built out of the Id the
+     * item gives itself. That property only says something once the proxy is
+     * connected, before that the id on the bus is all there is: the icons are
+     * only placed in the panel once they are ready, so the id is settled by the
+     * time anyone asks for it.
+     *
+     * @returns {string} the id to store in the settings.
+     */
+    get settingsId() {
+        if (this._settingsId)
+            return this._settingsId;
+
+        let id = null;
+
+        if (this.isReady) {
+            try {
+                id = this._proxy.Id;
+            } catch (e) {
+                // The proxy of an icon that is on its way out says nothing.
+                id = null;
+            }
+        }
+
+        const settingsId = Util.settingsId(id, this._uniqueId);
+
+        // Only a ready icon has an id worth remembering: before that the Id
+        // property may not have arrived yet, and the one on the bus is the
+        // placeholder that changes between two runs.
+        if (this.isReady)
+            this._settingsId = settingsId;
+
+        return settingsId;
     }
 
     get service() {

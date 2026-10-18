@@ -161,6 +161,18 @@ class IndicatorBaseStatusIcon extends PanelMenu.Button {
     }
 
     /**
+     * The id the hidden state and the position of this icon are stored under.
+     *
+     * An icon that has nothing better to offer is remembered by the id it is
+     * known by, which is what the icons that live in the tray area already were
+     * for a long time: their id comes from the window class and survives a
+     * restart of the application.
+     */
+    get settingsId() {
+        return this.uniqueId;
+    }
+
+    /**
      * Name to show for this icon in the preferences.
      */
     get displayName() {
@@ -360,6 +372,10 @@ class IndicatorStatusIcon extends BaseStatusIcon {
 
     get uniqueId() {
         return this._indicator.uniqueId;
+    }
+
+    get settingsId() {
+        return this._indicator.settingsId;
     }
 
     get displayName() {
