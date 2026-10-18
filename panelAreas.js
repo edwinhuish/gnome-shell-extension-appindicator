@@ -139,11 +139,19 @@ class AppIndicatorTrayFoldButton extends PanelMenu.Button {
         this._foldIcon.set_style('padding: 0; margin: 0');
         this.add_child(this._foldIcon);
 
-        this._foldGesture = new Clutter.ClickGesture();
-        this._foldGesture.set_recognize_on_press(true);
-        this._foldGesture.connect('recognize',
-            () => PanelAreas.getDefault()?.toggleHiddenIcons());
-        this.add_action(this._foldGesture);
+        // The button takes the click itself instead of adding a gesture: the
+        // gesture PanelMenu.Button owns is turned off as soon as a button
+        // declares that it has no menu, and a gesture of our own would depend
+        // on a Clutter class that is not handed out to extensions in every
+        // shell version. The panel is opened on press, so that it does not
+        // have to wait for the release like a menu would.
+        this.connect('button-press-event', (_actor, event) => {
+            if (event.get_button() !== Clutter.BUTTON_PRIMARY)
+                return Clutter.EVENT_PROPAGATE;
+
+            PanelAreas.getDefault()?.toggleHiddenIcons();
+            return Clutter.EVENT_STOP;
+        });
     }
 
     /**
