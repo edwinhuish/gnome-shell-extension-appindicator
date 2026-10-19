@@ -24,6 +24,7 @@ import St from 'gi://St';
 
 import * as Params from 'resource:///org/gnome/shell/misc/params.js';
 import * as Signals from 'resource:///org/gnome/shell/misc/signals.js';
+import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
 import * as DBusUtils from './dbusUtils.js';
 import * as IconCache from './iconCache.js';
@@ -44,6 +45,10 @@ Gio._promisify(Gio.DBusConnection.prototype, 'call');
 const MAX_UPDATE_FREQUENCY = 30; // In ms
 const FALLBACK_ICON_NAME = 'image-loading-symbolic';
 const PIXMAPS_FORMAT = imports.gi.Cogl.PixelFormat.ARGB_8888;
+
+// How long an Activate call is given to show a window on its own before the
+// window of the app is restored by us. See AppIndicator.open().
+const ACTIVATE_FALLBACK_DELAY = 250; // In ms
 
 export const SNICategory = Object.freeze({
     APPLICATION: 'ApplicationStatus',
@@ -906,6 +911,14 @@ export class AppIndicator extends Signals.EventEmitter {
         // parameters are "an hint to the item where to show eventual windows" [sic]
         // ... and don't seem to have any effect.
 
+        // Scheduled before the call below, which may return early: an item that
+        // does not implement Activate at all has to have its window restored
+        // here as well.
+        GLib.timeout_add(GLib.PRIORITY_DEFAULT, ACTIVATE_FALLBACK_DELAY, () => {
+            this._activateAppWindow();
+            return GLib.SOURCE_REMOVE;
+        });
+
         try {
             await this.provideActivationToken(timestamp);
             await this._proxy.ActivateAsync(x, y, cancellable);
@@ -919,6 +932,95 @@ export class AppIndicator extends Signals.EventEmitter {
 
             if (!e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
                 Util.Logger.critical(`${this.id}, failed to activate: ${e.message}`);
+        }
+    }
+
+    /**
+     * The app the item belongs to, looked up from the desktop file found for
+     * the process behind its bus name (see _updateAppInfo()).
+     *
+     * @returns {Shell.App|null} the app, or null if none could be found
+     */
+    _getApp() {
+        const appSystem = Shell.AppSystem.get_default();
+        const id = this._appInfo?.get_id();
+
+        if (id) {
+            const app = appSystem.lookup_app(id);
+            if (app)
+                return app;
+        }
+
+        // The app info found for the process may be a fake one built out of the
+        // command line (see _updateAppInfo()): the Id of the item is then what
+        // is left, and it usually is the name of the desktop file.
+        for (const name of [this.id, this.title]) {
+            if (!name)
+                continue;
+
+            const app = appSystem.lookup_heuristic_basename(name);
+            if (app)
+                return app;
+        }
+
+        return null;
+    }
+
+    /**
+     * The windows the item belongs to.
+     *
+     * @returns {Meta.Window[]} the windows, an empty array if none are found
+     */
+    _getAppWindows() {
+        const app = this._getApp();
+
+        if (app)
+            return app.get_windows();
+
+        // No desktop file is known: fall back to the WM_CLASS of the windows,
+        // which is what the Id of an item usually is (#Thunderbird, ...).
+        const normalize = s => `${s ?? ''}`.toLowerCase().replace(/[\s_-]+/g, '');
+        const wanted = [this.id, this.title]
+            .map(normalize)
+            .filter(s => s.length);
+
+        if (!wanted.length)
+            return [];
+
+        return global.get_window_actors()
+            .map(actor => actor.meta_window)
+            .filter(win => win && wanted.includes(normalize(win.get_wm_class())));
+    }
+
+    /**
+     * Bring a window of the app to the front, if the Activate call did not.
+     *
+     * A double click on the icon asks the item to show itself, but some items
+     * implement Activate as a no-op: Thunderbird on Linux does (its system tray
+     * is the dbus_hooks crate, which has an empty activate()), so the window
+     * never comes back and the icon looks dead. The window is then restored
+     * here, but only when the Activate call really did nothing: an app whose
+     * own implementation works is left alone, so that a double click that opens
+     * a window of its own does not get it replaced by an older one.
+     */
+    _activateAppWindow() {
+        if (this._cancellable.is_cancelled())
+            return;
+
+        try {
+            const windows = this._getAppWindows();
+            if (!windows.length)
+                return;
+
+            const current = global.display.focus_window;
+            if (current && windows.includes(current))
+                return;
+
+            const target = windows.find(win => win.minimized) ?? windows[0];
+            Main.activateWindow(target, global.get_current_time());
+        } catch (e) {
+            Util.Logger.debug(
+                `${this.uniqueId}, failed to activate app window: ${e.message}`);
         }
     }
 
