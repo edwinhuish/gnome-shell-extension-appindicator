@@ -120,15 +120,37 @@ class IndicatorBaseStatusIcon extends PanelMenu.Button {
 
         if (this._icon) {
             this._box.add_child(this._icon);
-            // Tray icons that are not appindicators (legacy X11 ones) don't set
-            // this up themselves, unlike IconActor.
-            this._icon.set_style(AppIndicator.IconActor.DEFAULT_STYLE);
+            this._applyIconSpacingStyle();
             const id = this._icon.connect('destroy', () => {
                 this._icon.disconnect(id);
                 this._icon = null;
                 this._monitorIconEffects();
             });
         }
+    }
+
+    /**
+     * Puts the spacing the icon is meant to take on the actor that can carry it.
+     *
+     * An AppIndicator icon is an IconActor, an St widget, and the style of
+     * IconActor.DEFAULT_STYLE is applied by itself. A legacy X11 tray icon is
+     * the ClutterClone the shell wraps the tray window in: it is an actor, but
+     * not an St one, so it has no set_style() at all and styling it throws
+     * instead of being ignored. The padding then goes on the box holding it,
+     * which has this icon as its only child.
+     */
+    _applyIconSpacingStyle() {
+        if (!this._icon)
+            return;
+
+        const style = AppIndicator.IconActor.DEFAULT_STYLE;
+
+        if (this._icon instanceof St.Widget) {
+            this._icon.set_style(style);
+            return;
+        }
+
+        this._box.set_style(style);
     }
 
     _onDestroy() {
@@ -281,8 +303,7 @@ class IndicatorBaseStatusIcon extends PanelMenu.Button {
      * the "Icon Spacing" slider is visible in the panel right away.
      */
     applyIconSpacing() {
-        if (this._icon)
-            this._icon.set_style(AppIndicator.IconActor.DEFAULT_STYLE);
+        this._applyIconSpacingStyle();
 
         this.set_style(IndicatorBaseStatusIcon.DEFAULT_STYLE);
 
