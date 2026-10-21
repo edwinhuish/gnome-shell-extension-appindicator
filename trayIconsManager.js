@@ -47,11 +47,6 @@ export class TrayIconsManager extends Signals.EventEmitter {
         this._changedId = SettingsManager.getDefaultGSettings().connect(
             'changed::legacy-tray-enabled', () => this._toggle());
 
-        // The list of ignored window classes is read when an icon is added, so
-        // a new entry only has to be applied to the icons already on the panel.
-        this._ignoredId = SettingsManager.getDefaultGSettings().connect(
-            'changed::hidden-legacy-icons', () => this._syncIgnoredIcons());
-
         // The background of the bar is handed to the tray manager when it is
         // built, see _enable(), and it has to be kept in sync with the bar.
         // The tray manager is rebuilt for that, so it is done once the bar
@@ -180,55 +175,8 @@ export class TrayIconsManager extends Signals.EventEmitter {
     }
 
     onTrayIconAdded(_tray, icon) {
-        if (this._isIgnored(icon)) {
-            // The window stays managed by the tray manager, so the application
-            // still has its icon; it is just never put on the panel.
-            Util.Logger.debug(`Ignoring legacy tray icon ${icon.wm_class}`);
-            return;
-        }
-
         const trayIcon = new IndicatorStatusIcon.IndicatorStatusTrayIcon(icon);
         IndicatorStatusIcon.addIconToPanel(trayIcon);
-    }
-
-    /**
-     * Whether the window class of this tray icon is listed in
-     * `hidden-legacy-icons`, the applications whose own tray icon is not
-     * wanted (see the description of the key).
-     *
-     * @param {object} icon the icon the tray manager added.
-     * @returns {boolean} whether it has to be kept off the panel.
-     */
-    _isIgnored(icon) {
-        const patterns = SettingsManager.getDefaultGSettings()
-            .get_strv('hidden-legacy-icons');
-
-        if (!patterns.length)
-            return false;
-
-        const wmClass = `${icon.wm_class ?? ''}`.trim().toLowerCase();
-        const pidId = `legacy:pid:${icon.pid}`;
-
-        return patterns.some(pattern => {
-            const value = pattern.trim().toLowerCase();
-
-            return value !== '' && (value === wmClass ||
-                value === `legacy:${wmClass}` || value === pidId);
-        });
-    }
-
-    /**
-     * Applies `hidden-legacy-icons` to the icons that are already on the panel:
-     * an icon that was added before its window class was listed is destroyed,
-     * which is what takes it off the panel. Listing it again (showing it) needs
-     * the application to add the icon back, so it takes a restart of that
-     * application.
-     */
-    _syncIgnoredIcons() {
-        for (const trayIcon of IndicatorStatusIcon.getTrayIcons()) {
-            if (trayIcon.icon && this._isIgnored(trayIcon.icon))
-                trayIcon.destroy();
-        }
     }
 
     onTrayIconRemoved(_tray, icon) {
@@ -249,7 +197,6 @@ export class TrayIconsManager extends Signals.EventEmitter {
         }
 
         SettingsManager.getDefaultGSettings().disconnect(this._changedId);
-        SettingsManager.getDefaultGSettings().disconnect(this._ignoredId);
         this._disable();
         trayIconsManager = null;
     }

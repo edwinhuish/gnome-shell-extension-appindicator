@@ -34,7 +34,6 @@ import {Logger} from './logger.js';
 const REQUIRED_KEYS = [
     'custom-icons',
     'hidden-icons',
-    'hidden-legacy-icons',
     'icon-brightness',
     'icon-contrast',
     'icon-opacity',

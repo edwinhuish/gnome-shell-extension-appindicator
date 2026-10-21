@@ -81,11 +81,6 @@
       <summary>Hidden icons</summary>
       <description>Indicators that are collected in the floating panel next to the panel bar, instead of the tray area</description>
     </key>
-    <key name="hidden-legacy-icons" type="as">
-      <default>[]</default>
-      <summary>Ignored legacy tray icons</summary>
-      <description>Window classes of legacy X11 tray icons that are never shown, neither in the tray area nor in the hidden icons panel. An application whose own tray icon is replaced by one of its own (an SNI icon, for instance) is listed here. Takes effect for icons that appear after the change, and hides the ones already shown.</description>
-    </key>
     <key name="icon-order" type="as">
       <default>[]</default>
       <summary>Icon order</summary>
