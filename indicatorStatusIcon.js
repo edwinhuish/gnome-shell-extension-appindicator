@@ -219,25 +219,6 @@ class IndicatorBaseStatusIcon extends PanelMenu.Button {
     }
 
     /**
-     * Shows or hides what this icon displays, leaving the container itself on
-     * the panel.
-     *
-     * An icon that is not wanted still has to keep its container where it is:
-     * the PanelAreas position the tray icons by their container, and a
-     * container that is taken away has to be added again by the application.
-     * Hiding both the icon and the box it sits in takes no space in the panel
-     * and is undone by calling this again the other way around.
-     *
-     * @param {boolean} visible whether the icon should be shown.
-     */
-    setContentVisible(visible) {
-        if (this._icon)
-            this._icon.visible = visible;
-
-        this._box.visible = visible;
-    }
-
-    /**
      * The icon may not act on the click that has been pressed to start a drag.
      */
     cancelPendingClicks() {

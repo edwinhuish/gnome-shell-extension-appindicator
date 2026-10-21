@@ -52,6 +52,11 @@ export class TrayIconsManager extends Signals.EventEmitter {
         this._ignoredId = SettingsManager.getDefaultGSettings().connect(
             'changed::hidden-legacy-icons', () => this._syncIgnoredIcons());
 
+        // The tray icons that are kept off the panel right now, by the icon
+        // window they wrap: they are what makes the icons appear again as soon
+        // as their window class leaves hidden-legacy-icons.
+        this._ignoredIcons = new Map();
+
         // The background of the bar is handed to the tray manager when it is
         // built, see _enable(), and it has to be kept in sync with the bar.
         // The tray manager is rebuilt for that, so it is done once the bar
@@ -114,6 +119,10 @@ export class TrayIconsManager extends Signals.EventEmitter {
         this._tray.unmanage_screen();
         this._tray = null;
         this._trayColor = null;
+
+        // The icons are gone with the tray manager, and so are the windows the
+        // ignored ones were kept for.
+        this._ignoredIcons.clear();
     }
 
     /**
@@ -181,35 +190,51 @@ export class TrayIconsManager extends Signals.EventEmitter {
 
     onTrayIconAdded(_tray, icon) {
         const trayIcon = new IndicatorStatusIcon.IndicatorStatusTrayIcon(icon);
+
+        if (this._isIgnored(icon)) {
+            this._ignoreIcon(trayIcon, icon);
+            return;
+        }
+
         IndicatorStatusIcon.addIconToPanel(trayIcon);
-        this._applyLegacyVisibility(trayIcon);
     }
 
     /**
-     * Shows or hides the icon of a legacy tray icon container, following
-     * `hidden-legacy-icons`.
+     * Puts a legacy tray icon on the panel.
      *
-     * The icon the tray manager hands over is the window of the application
-     * itself, cloned into the panel. Hiding the clone is enough to take it off
-     * the panel and, unlike destroying the container, it is reversible: the
-     * window is still managed by the tray manager, so the application keeps
-     * its icon and knows nothing about this, and the same clone can be shown
-     * again later. That is what makes the setting switchable without the
-     * application having to add its icon again.
-     *
-     * @param {object} trayIcon the container the icon was put in.
+     * @param {object} icon the icon the tray manager added.
      */
-    _applyLegacyVisibility(trayIcon) {
-        const icon = trayIcon.icon;
-        if (!icon)
-            return;
+    _addIconToPanel(icon) {
+        const trayIcon = new IndicatorStatusIcon.IndicatorStatusTrayIcon(icon);
+        IndicatorStatusIcon.addIconToPanel(trayIcon);
+    }
 
-        const wanted = !this._isIgnored(icon);
+    /**
+     * Takes a legacy tray icon off the panel but keeps the icon itself alive.
+     *
+     * The window stays managed by the tray manager, so the application still
+     * has its icon and knows nothing about this; the icon is kept here, so that
+     * it can be put back on the panel without the application adding it again.
+     *
+     * Destroying the container would destroy the icon it wraps as well (see
+     * _onDestroy() in indicatorStatusIcon.js), so the icon is detached from the
+     * container first. That is the one place where an icon is taken out of its
+     * container by hand.
+     *
+     * @param {object} trayIcon the container that was built for the icon.
+     * @param {object} icon the icon the tray manager added.
+     */
+    _ignoreIcon(trayIcon, icon) {
+        Util.Logger.debug(`Ignoring legacy tray icon ${icon.wm_class}`);
 
-        if (!wanted)
-            Util.Logger.debug(`Hiding legacy tray icon ${icon.wm_class}`);
+        const parent = icon.get_parent();
+        if (parent)
+            parent.remove_child(icon);
 
-        trayIcon.setContentVisible(wanted);
+        trayIcon._icon = null;
+        trayIcon.destroy();
+
+        this._ignoredIcons.set(icon, true);
     }
 
     /**
@@ -239,16 +264,29 @@ export class TrayIconsManager extends Signals.EventEmitter {
     }
 
     /**
-     * Applies `hidden-legacy-icons` to the icons that are on the panel right
-     * now, in both directions: the ones that are listed are hidden, the ones
-     * that are not listed any more are shown again.
+     * Applies `hidden-legacy-icons` to the icons that are already there: the
+     * ones that are now listed are taken off the panel, the ones that are not
+     * listed any more are put back. Both work without the application having to
+     * add its icon again, which is what makes the setting switchable.
      */
     _syncIgnoredIcons() {
-        for (const trayIcon of IndicatorStatusIcon.getTrayIcons())
-            this._applyLegacyVisibility(trayIcon);
+        for (const trayIcon of IndicatorStatusIcon.getTrayIcons()) {
+            if (trayIcon.icon && this._isIgnored(trayIcon.icon))
+                this._ignoreIcon(trayIcon, trayIcon.icon);
+        }
+
+        for (const icon of [...this._ignoredIcons.keys()]) {
+            if (this._isIgnored(icon))
+                continue;
+
+            this._ignoredIcons.delete(icon);
+            this._addIconToPanel(icon);
+        }
     }
 
     onTrayIconRemoved(_tray, icon) {
+        this._ignoredIcons.delete(icon);
+
         try {
             const [trayIcon] = IndicatorStatusIcon.getTrayIcons().filter(i => i.icon === icon);
             trayIcon.destroy();
