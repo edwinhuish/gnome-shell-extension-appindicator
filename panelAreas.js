@@ -296,6 +296,11 @@ export class PanelAreas extends Signals.EventEmitter {
         this._swallowRelease = false;
         this._droppingIds = false;
 
+        // Whether the shell has started taking the panel and the icons in it
+        // down, see _watchUiTeardown().
+        this._uiGone = false;
+        this._uiTeardownId = 0;
+
         Util.connectSmart(settings, 'changed::tray-pos', this, () => this.relayout());
         Util.connectSmart(settings, 'changed::language-area-enabled', this,
             () => this.relayout());
@@ -334,6 +339,7 @@ export class PanelAreas extends Signals.EventEmitter {
         Util.connectSmart(Main.layoutManager, 'monitors-changed', this,
             () => this.relayout());
 
+        this._watchUiTeardown();
         this.relayout();
     }
 
@@ -478,16 +484,56 @@ export class PanelAreas extends Signals.EventEmitter {
      * Re-applies the position of every area we own.
      */
     relayout() {
-        if (!Main.panel)
+        if (this._uiGone || !Main.panel)
             return;
 
         this._syncIcons();
     }
 
     /**
+     * Notices that the shell is on its way out, before it takes the panel down.
+     *
+     * At the end of the session the shell destroys its whole uiGroup, and that
+     * takes the panel, the icons in it and the boxes we arrange them in with
+     * it. The icons ask for a relayout from their own _onDestroy(), so the last
+     * thing we would do is lay out an area whose actors are all being destroyed
+     * around us. A disposed actor is not an error that could be caught: gjs
+     * only logs a warning and hands back null, and the actor gives way later,
+     * inside Clutter, when it is moved into a box that is gone as well.
+     *
+     * uiGroup signals `destroy` before it destroys its children, so this is
+     * known before the first icon is taken away. From here on the areas are
+     * left alone: there is nothing left to arrange in a panel that is going.
+     */
+    _watchUiTeardown() {
+        const uiGroup = Main.uiGroup;
+
+        if (!uiGroup)
+            return;
+
+        this._uiTeardownId = uiGroup.connect('destroy', () => {
+            this._uiTeardownId = 0;
+            this._uiGone = true;
+            this._panelFrozen = true;
+
+            // A reposition that is waiting for an idle would outlive the panel
+            // it means to move.
+            if (this._repositionId) {
+                GLib.source_remove(this._repositionId);
+                this._repositionId = 0;
+            }
+
+            Util.Logger.debug('The shell is shutting down, the panel areas are left alone');
+        });
+    }
+
+    /**
      * Places the language area, the fold button and every icon we know about.
      */
     _syncIcons() {
+        if (this._uiGone)
+            return;
+
         const icons = this._sortedIcons();
         const visibleIcons = this._visibleIcons(icons);
 
@@ -1184,6 +1230,11 @@ export class PanelAreas extends Signals.EventEmitter {
      * own one out of the panel.
      */
     _releaseLanguageArea() {
+        // The language area lives in the panel, which is gone with the session:
+        // there is nothing left to hand back, and no box left to hand it to.
+        if (this._uiGone)
+            return;
+
         this._releaseAdoptedLanguageArea();
 
         if (!this._ownLanguageIndicator)
@@ -2085,6 +2136,11 @@ export class PanelAreas extends Signals.EventEmitter {
     destroy() {
         this._cancelDrag();
         this._unwatchPointer();
+
+        if (this._uiTeardownId) {
+            Main.uiGroup?.disconnect(this._uiTeardownId);
+            this._uiTeardownId = 0;
+        }
 
         if (this._repositionId) {
             GLib.source_remove(this._repositionId);
