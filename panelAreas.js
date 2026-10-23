@@ -1149,6 +1149,13 @@ export class PanelAreas extends Signals.EventEmitter {
      * by name instead of asking for their id.
      */
     _publishKnownIcons() {
+        // Every icon is on its way out with the session, and the last one to go
+        // would publish an empty list: the icons the user has seen are not gone
+        // from the settings just because the shell is. What is published here
+        // is what the preferences offer by name, so it is left as it was.
+        if (this._uiGone)
+            return;
+
         const settings = this._getSettings();
         const knownIcons = [...this._trayIcons].map(icon =>
             [icon.settingsId, icon.displayName || icon.settingsId]);
