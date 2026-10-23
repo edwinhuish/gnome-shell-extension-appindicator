@@ -265,6 +265,9 @@ export class PanelAreas extends Signals.EventEmitter {
         this._adoptedLanguageIndicator = null;
         this._adoptedLanguageHome = null;
         this._adoptedLanguageStyle = null;
+        // The [actor, handler] pairs that forget the adopted language area when
+        // one of its actors is destroyed, see _watchAdoptedLanguageArea().
+        this._adoptedLanguageWatches = [];
         this._ownLanguageIndicator = null;
         this._foldButton = null;
 
@@ -766,6 +769,57 @@ export class PanelAreas extends Signals.EventEmitter {
             ? {parent, index: parent.get_children().indexOf(container)}
             : null;
         this._adoptedLanguageStyle = indicator.get_style();
+
+        // The indicator and the box it came from are handed back by
+        // _releaseAdoptedLanguageArea(), and neither of them can be moved once
+        // it has been destroyed. They are taken away without this extension
+        // being asked first — the input method panel restarts, the kimpanel
+        // extension is reloaded, the session ends — and what is remembered here
+        // then points at an actor that no longer exists. So the memory goes
+        // with the actors it is about.
+        this._watchAdoptedLanguageArea(container, parent);
+    }
+
+    /**
+     * Forgets the adopted language area as soon as one of `actors` is gone.
+     *
+     * A destroyed actor is not an error that can be caught: gjs only logs a
+     * warning and hands back null, and the actor is what takes the shell down
+     * when it is used as one again, as a child of a box that is gone as well.
+     *
+     * @param {...(Clutter.Actor|null)} actors the actors the memory is about.
+     */
+    _watchAdoptedLanguageArea(...actors) {
+        this._dropAdoptedLanguageWatches();
+
+        for (const actor of actors) {
+            if (!actor)
+                continue;
+
+            const id = actor.connect('destroy', () => {
+                this._dropAdoptedLanguageWatches();
+                this._forgetAdoptedLanguageArea();
+            });
+
+            this._adoptedLanguageWatches.push([actor, id]);
+        }
+    }
+
+    /**
+     * Drops what is remembered about the adopted indicator, whatever became of
+     * it: none of the actors it was taken from are ours to move anymore.
+     */
+    _forgetAdoptedLanguageArea() {
+        this._adoptedLanguageIndicator = null;
+        this._adoptedLanguageHome = null;
+        this._adoptedLanguageStyle = null;
+    }
+
+    _dropAdoptedLanguageWatches() {
+        for (const [actor, id] of this._adoptedLanguageWatches)
+            actor.disconnect(id);
+
+        this._adoptedLanguageWatches = [];
     }
 
     /**
@@ -773,6 +827,8 @@ export class PanelAreas extends Signals.EventEmitter {
      */
     _releaseAdoptedLanguageArea() {
         const adopted = this._adoptedLanguageIndicator;
+
+        this._dropAdoptedLanguageWatches();
 
         if (!adopted)
             return;
@@ -785,12 +841,13 @@ export class PanelAreas extends Signals.EventEmitter {
             if (home?.parent)
                 this._moveToBox(adopted.container, home.parent, home.index);
         } catch {
-            // The indicator is gone with the panel item it lived in.
+            // The indicator is gone with the panel item it lived in. This is
+            // the second line of defence only, and a weak one: a disposed actor
+            // throws nothing in gjs, so _watchAdoptedLanguageArea() is what
+            // really keeps a destroyed actor out of _moveToBox().
         }
 
-        this._adoptedLanguageIndicator = null;
-        this._adoptedLanguageHome = null;
-        this._adoptedLanguageStyle = null;
+        this._forgetAdoptedLanguageArea();
     }
 
     /**
