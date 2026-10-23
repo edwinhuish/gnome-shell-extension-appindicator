@@ -506,7 +506,7 @@ export class PanelAreas extends Signals.EventEmitter {
      * left alone: there is nothing left to arrange in a panel that is going.
      */
     _watchUiTeardown() {
-        const uiGroup = Main.uiGroup;
+        const {uiGroup} = Main;
 
         if (!uiGroup)
             return;
