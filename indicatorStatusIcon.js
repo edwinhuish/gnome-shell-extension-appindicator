@@ -476,12 +476,19 @@ class IndicatorStatusIcon extends BaseStatusIcon {
         }
     }
 
+    /**
+     * Whether this icon has something to show, which is what it is routed by.
+     *
+     * This is called from the constructor of the base class as well, before
+     * the indicator is there, so it has to cope with not having one: an icon
+     * that has no indicator yet shows nothing either.
+     */
     _updateVisibility() {
         const wasVisible = this.visible;
-        this.visible = this.isReady() &&
-            this._indicator.status !== AppIndicator.SNIStatus.PASSIVE;
+        this.visible = !!this.isReady() &&
+            this._indicator?.status !== AppIndicator.SNIStatus.PASSIVE;
 
-        if (this.visible !== wasVisible)
+        if (this.visible !== wasVisible && this._indicator)
             this._indicator.checkAlive().catch(logError);
     }
 
@@ -519,12 +526,24 @@ class IndicatorStatusIcon extends BaseStatusIcon {
     }
 
     _showIfReady() {
+        // The visibility is kept up to date even before the icon is ready: a
+        // panel button is visible by default, and an indicator that has not
+        // even loaded its pixmap yet would count as one the tray area shows
+        // (see _syncIcons() in panelAreas.js).
+        this._updateVisibility();
+
         if (!this.isReady())
             return;
 
         this._updateLabel();
-        this._updateVisibility();
         this._updateMenu();
+
+        // The id this icon is remembered by, and with it the hidden state the
+        // panel areas route it by, only settles once the indicator is ready
+        // (see settingsId() in appIndicator.js). Becoming ready does not change
+        // the visibility of an icon that showed nothing anyway, so the areas
+        // would never be asked to look at this icon again: they are asked here.
+        PanelAreas.PanelAreas.getDefault()?.relayout();
     }
 
     _updateClickCount(event) {
